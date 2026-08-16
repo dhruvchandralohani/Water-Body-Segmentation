@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Water Body Segmentation</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <h1>Water Body Segmentation</h1>
+      </div>
+      <p class="tagline">Satellite image water-body detection -- upload an image to run inference.</p>
+      <div id="model-info-bar" class="info-bar" hidden></div>
+    </header>
+
+    <main class="app-main">
+      <!-- Upload -->
+      <section class="card upload-card">
+        <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Upload an image">
+          <svg class="drop-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 16V4M12 4L7 9M12 4l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <p class="drop-text">Drag &amp; drop an image, or</p>
+          <button id="browse-btn" type="button" class="btn btn-secondary">Browse files</button>
+          <p class="drop-hint">JPG, PNG, TIFF, BMP, WEBP</p>
+          <input id="file-input" type="file" accept="image/*,.tif,.tiff" hidden />
+        </div>
+
+        <div id="preview-section" class="preview-section" hidden>
+          <img id="preview-img" class="preview-img" alt="Selected image preview" />
+          <p id="preview-fallback" class="preview-fallback" hidden></p>
+          <div class="preview-actions">
+            <button id="run-btn" type="button" class="btn btn-primary" disabled>Run Segmentation</button>
+            <button id="reset-btn" type="button" class="btn btn-ghost">Choose a different image</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Loading -->
+      <section id="loading-section" class="card loading-card" hidden>
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Running inference...</p>
+      </section>
+
+      <!-- Error -->
+      <section id="error-section" class="card error-card" hidden role="alert">
+        <p id="error-message"></p>
+      </section>
+
+      <!-- Results -->
+      <section id="results-section" class="results-section" hidden>
+        <div class="panels-grid">
+          <div class="panel">
+            <h2 class="panel-title">Original Image</h2>
+            <div class="panel-frame">
+              <img id="panel-original" alt="Original uploaded image" />
+            </div>
+          </div>
+          <div class="panel">
+            <h2 class="panel-title">Segmented Mask</h2>
+            <div class="panel-frame">
+              <img id="panel-mask" alt="Predicted water body mask" />
+            </div>
+          </div>
+          <div class="panel">
+            <h2 class="panel-title">Overlay View</h2>
+            <div class="panel-frame overlay-frame">
+              <img id="overlay-base" alt="Original image" />
+              <img id="overlay-tint" alt="Water mask overlay" />
+            </div>
+            <div class="overlay-control">
+              <label for="opacity-slider">Overlay opacity</label>
+              <input id="opacity-slider" type="range" min="0" max="100" value="55" />
+              <span id="opacity-value">55%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Water Coverage</span>
+            <span id="stat-coverage" class="stat-value">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Inference Time</span>
+            <span id="stat-time" class="stat-value">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Width</span>
+            <span id="stat-width" class="stat-value">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Height</span>
+            <span id="stat-height" class="stat-value">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Tiles</span>
+            <span id="stat-tiles" class="stat-value">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Device</span>
+            <span id="stat-device" class="stat-value">--</span>
+          </div>
+        </div>
+
+        <div class="download-row">
+          <button id="download-mask-btn" type="button" class="btn btn-secondary">Download Mask</button>
+          <button id="download-overlay-btn" type="button" class="btn btn-secondary">Download Overlay</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

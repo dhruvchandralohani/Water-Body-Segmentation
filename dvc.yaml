@@ -1,0 +1,347 @@
+# dvc.yaml -- the pipeline DAG. Lives at the repo root; every cmd runs from there.
+#
+#   dvc repro          -> runs the full chain, skipping anything already current
+#   dvc repro train    -> runs up to and including `train`
+#   dvc repro tune     -> runs the frozen tuning stage explicitly
+#   dvc dag            -> prints the graph
+#   dvc metrics show   -> prints metrics/test_metrics.json
+#
+# NOTE: training/mlflow.db is deliberately NOT declared as an out anywhere.
+# DVC removes outs before running a stage, which would wipe your entire
+# experiment history on every repro. MLflow owns that file; DVC owns artifacts.
+
+stages:
+
+  # -------------------------------------------------------------------------
+  # 1. Scan the raw image directory -> filename,width,height manifest
+  # -------------------------------------------------------------------------
+  build_manifest:
+    cmd: >-
+      python -m data_pipeline.build_manifest
+      --image-dir ${paths.raw_image_dir}
+      --output ${paths.manifest}
+    deps:
+      - data_pipeline/build_manifest.py
+      - ${paths.raw_image_dir}
+    outs:
+      - ${paths.manifest}
+
+  # -------------------------------------------------------------------------
+  # 2. Size filter, no-data mask correction, degenerate-pair removal,
+  #    pixel-level class balance, stratified 70/15/15 split
+  # -------------------------------------------------------------------------
+  audit:
+    cmd: >-
+      python -m data_pipeline.audit
+      --manifest ${paths.manifest}
+      --image-dir ${paths.raw_image_dir}
+      --mask-dir ${paths.raw_mask_dir}
+      --corrected-mask-dir ${paths.corrected_mask_dir}
+      --output-dir ${paths.splits_dir}
+      --class-balance-json ${paths.metrics_dir}/class_balance.json
+      --min-dim ${audit.min_dim}
+      --all-white-thresh ${audit.all_white_thresh}
+      --near-black-threshold ${audit.near_black_threshold}
+      --near-black-exclude-thresh ${audit.near_black_exclude_thresh}
+      --val-frac ${audit.val_frac}
+      --test-frac ${audit.test_frac}
+      --n-buckets ${audit.n_buckets}
+      --seed ${audit.seed}
+    deps:
+      - data_pipeline/audit.py
+      - ${paths.manifest}
+      - ${paths.raw_image_dir}
+      - ${paths.raw_mask_dir}
+    outs:
+      - ${paths.corrected_mask_dir}
+      - ${paths.splits_dir}/train.csv
+      - ${paths.splits_dir}/val.csv
+      - ${paths.splits_dir}/test.csv
+      - ${paths.splits_dir}/mask_correction_report.csv
+    metrics:
+      # The number that justifies foreground-biased sampling, versioned
+      # alongside the data that produced it.
+      - ${paths.metrics_dir}/class_balance.json:
+          cache: false
+
+  # -------------------------------------------------------------------------
+  # 3. Optuna search. FROZEN: exploration, not part of the retraining path.
+  #    Run it deliberately (`dvc repro tune`), read the winner off the study,
+  #    then write those values into params.yaml:train and repro normally.
+  #    The study DB uses persist:true so successive runs resume the same study
+  #    instead of DVC deleting it first.
+  # -------------------------------------------------------------------------
+  tune:
+    frozen: true
+    cmd: >-
+      python -m training.tune
+      --train-manifest ${paths.splits_dir}/train.csv
+      --val-manifest ${paths.splits_dir}/val.csv
+      --image-dir ${paths.raw_image_dir}
+      --mask-dir ${paths.corrected_mask_dir}
+      --checkpoint-dir ${paths.checkpoint_dir}/tune
+      --tracking-uri sqlite:///${paths.mlflow_db}
+      --experiment-name ${train.experiment_name}
+      --study-name ${tune.study_name}
+      --study-storage sqlite:///${paths.study_db}
+      --n-trials ${tune.n_trials}
+      --epochs ${tune.epochs}
+      --pruner-startup-trials ${tune.pruner_startup_trials}
+      --pruner-warmup-epochs ${tune.pruner_warmup_epochs}
+      --window-min ${data.window_min}
+      --window-max ${data.window_max}
+      --patch-size ${data.patch_size}
+      --fg-bias-ratio ${data.fg_bias_ratio}
+      --patches-per-epoch ${data.patches_per_epoch}
+      --tile-size ${data.tile_size}
+      --overlap ${data.overlap}
+      --num-workers ${data.num_workers}
+      --encoder-name ${model.encoder_name}
+      --encoder-weights ${model.encoder_weights}
+      --decoder-atrous-rates ${model.decoder_atrous_rates}
+      --bce-weight ${loss.bce_weight}
+      --dice-alpha ${loss.dice_alpha}
+      --dice-beta ${loss.dice_beta}
+      --early-stopping-patience ${train.early_stopping_patience}
+      --min-delta ${train.min_delta}
+      --lr-patience ${train.lr_patience}
+      --seed ${train.seed}
+    deps:
+      - training/tune.py
+      - training/train.py
+      - training/model.py
+      - training/loss.py
+      - ${paths.splits_dir}/train.csv
+      - ${paths.splits_dir}/val.csv
+      - ${paths.corrected_mask_dir}
+    outs:
+      - ${paths.study_db}:
+          persist: true
+
+  # -------------------------------------------------------------------------
+  # 4. Final training run at the hyperparameters in params.yaml:train
+  # -------------------------------------------------------------------------
+  train:
+    cmd: >-
+      python -m training.train
+      --train-manifest ${paths.splits_dir}/train.csv
+      --val-manifest ${paths.splits_dir}/val.csv
+      --image-dir ${paths.raw_image_dir}
+      --mask-dir ${paths.corrected_mask_dir}
+      --checkpoint-dir ${paths.checkpoint_dir}
+      --tracking-uri sqlite:///${paths.mlflow_db}
+      --experiment-name ${train.experiment_name}
+      --window-min ${data.window_min}
+      --window-max ${data.window_max}
+      --patch-size ${data.patch_size}
+      --fg-bias-ratio ${data.fg_bias_ratio}
+      --patches-per-epoch ${data.patches_per_epoch}
+      --tile-size ${data.tile_size}
+      --overlap ${data.overlap}
+      --num-workers ${data.num_workers}
+      --encoder-name ${model.encoder_name}
+      --encoder-weights ${model.encoder_weights}
+      --decoder-atrous-rates ${model.decoder_atrous_rates}
+      --bce-weight ${loss.bce_weight}
+      --dice-alpha ${loss.dice_alpha}
+      --dice-beta ${loss.dice_beta}
+      --lr ${train.lr}
+      --weight-decay ${train.weight_decay}
+      --dropout ${train.dropout}
+      --batch-size ${train.batch_size}
+      --epochs ${train.epochs}
+      --early-stopping-patience ${train.early_stopping_patience}
+      --min-delta ${train.min_delta}
+      --lr-patience ${train.lr_patience}
+      --seed ${train.seed}
+    deps:
+      - training/train.py
+      - training/model.py
+      - training/loss.py
+      - training/metrics.py
+      - training/tracking.py
+      - data_pipeline/data.py
+      - data_pipeline/patch_dataset.py
+      - data_pipeline/tile_dataset.py
+      - data_pipeline/transforms.py
+      - common/logging_setup.py
+      - ${paths.splits_dir}/train.csv
+      - ${paths.splits_dir}/val.csv
+      - ${paths.corrected_mask_dir}
+    outs:
+      - ${paths.checkpoint_dir}
+
+  # -------------------------------------------------------------------------
+  # 4b. Architecture benchmark. FROZEN: run deliberately with `dvc repro
+  #     benchmark`, since it trains one model per variant. Compare the runs in
+  #     MLflow -- they share an experiment and are tagged by `arch`.
+  #     Before spending the compute, dry-run the grid:
+  #         python -m training.model
+  #     Anything listed under "dropped" is a setting that variant will not get.
+  # -------------------------------------------------------------------------
+  benchmark:
+    foreach: ${benchmark.variants}
+    do:
+      frozen: true
+      cmd: >-
+        python -m training.train
+        --arch ${item.arch}
+        --encoder-name ${item.encoder_name}
+        --decoder-atrous-rates ${item.decoder_atrous_rates}
+        --seed ${item.seed}
+        --run-name ${key}
+        --experiment-name ${benchmark.experiment_name}
+        --epochs ${benchmark.epochs}
+        --checkpoint-dir ${paths.checkpoint_dir}/benchmark/${key}
+        --train-manifest ${paths.splits_dir}/train.csv
+        --val-manifest ${paths.splits_dir}/val.csv
+        --image-dir ${paths.raw_image_dir}
+        --mask-dir ${paths.corrected_mask_dir}
+        --tracking-uri sqlite:///${paths.mlflow_db}
+        --encoder-weights ${model.encoder_weights}
+        --window-min ${data.window_min}
+        --window-max ${data.window_max}
+        --patch-size ${data.patch_size}
+        --fg-bias-ratio ${data.fg_bias_ratio}
+        --patches-per-epoch ${data.patches_per_epoch}
+        --tile-size ${data.tile_size}
+        --overlap ${data.overlap}
+        --num-workers ${data.num_workers}
+        --bce-weight ${loss.bce_weight}
+        --dice-alpha ${loss.dice_alpha}
+        --dice-beta ${loss.dice_beta}
+        --lr ${train.lr}
+        --weight-decay ${train.weight_decay}
+        --dropout ${train.dropout}
+        --batch-size ${train.batch_size}
+        --early-stopping-patience ${train.early_stopping_patience}
+        --min-delta ${train.min_delta}
+        --lr-patience ${train.lr_patience}
+      deps:
+        - training/train.py
+        - training/model.py
+        - training/loss.py
+        - training/metrics.py
+        - training/tracking.py
+        - data_pipeline/data.py
+        - data_pipeline/patch_dataset.py
+        - data_pipeline/tile_dataset.py
+        - data_pipeline/transforms.py
+        - ${paths.splits_dir}/train.csv
+        - ${paths.splits_dir}/val.csv
+        - ${paths.corrected_mask_dir}
+      outs:
+        - ${paths.checkpoint_dir}/benchmark/${key}
+
+  # -------------------------------------------------------------------------
+  # 4c. Capacity vs regularization comparison. FROZEN: `dvc repro capacity`.
+  #     Same shape as the arch benchmark -- one arm per mechanism, everything
+  #     else held fixed. Compare in MLflow via the trainable_params and
+  #     freeze_encoder params logged per run.
+  # -------------------------------------------------------------------------
+  capacity:
+    foreach: ${capacity.variants}
+    do:
+      frozen: true
+      cmd: >-
+        python -m training.train
+        --dropout ${item.dropout}
+        --decoder-channels ${item.decoder_channels}
+        --seed ${item.seed}
+        --run-name ${key}
+        --experiment-name ${capacity.experiment_name}
+        --epochs ${capacity.epochs}
+        --checkpoint-dir ${paths.checkpoint_dir}/capacity/${key}
+        --arch deeplabv3plus
+        --encoder-name ${model.encoder_name}
+        --encoder-weights ${model.encoder_weights}
+        --decoder-atrous-rates ${model.decoder_atrous_rates}
+        --train-manifest ${paths.splits_dir}/train.csv
+        --val-manifest ${paths.splits_dir}/val.csv
+        --image-dir ${paths.raw_image_dir}
+        --mask-dir ${paths.corrected_mask_dir}
+        --tracking-uri sqlite:///${paths.mlflow_db}
+        --window-min ${data.window_min}
+        --window-max ${data.window_max}
+        --patch-size ${data.patch_size}
+        --fg-bias-ratio ${data.fg_bias_ratio}
+        --patches-per-epoch ${data.patches_per_epoch}
+        --tile-size ${data.tile_size}
+        --overlap ${data.overlap}
+        --num-workers ${data.num_workers}
+        --bce-weight ${loss.bce_weight}
+        --dice-alpha ${loss.dice_alpha}
+        --dice-beta ${loss.dice_beta}
+        --lr ${train.lr}
+        --weight-decay ${train.weight_decay}
+        --batch-size ${train.batch_size}
+        --early-stopping-patience ${train.early_stopping_patience}
+        --min-delta ${train.min_delta}
+        --lr-patience ${train.lr_patience}
+      deps:
+        - training/train.py
+        - training/model.py
+        - training/loss.py
+        - training/metrics.py
+        - training/tracking.py
+        - data_pipeline/data.py
+        - data_pipeline/patch_dataset.py
+        - data_pipeline/tile_dataset.py
+        - data_pipeline/transforms.py
+        - ${paths.splits_dir}/train.csv
+        - ${paths.splits_dir}/val.csv
+        - ${paths.corrected_mask_dir}
+      outs:
+        - ${paths.checkpoint_dir}/capacity/${key}
+
+  # -------------------------------------------------------------------------
+  # 5. Held-out evaluation. Emits a JSON so `dvc metrics diff` works across
+  #    commits, plus the qualitative preview grid as a DVC plot.
+  # -------------------------------------------------------------------------
+  evaluate:
+    cmd: >-
+      python -m training.test_model
+      --test-manifest ${paths.splits_dir}/test.csv
+      --image-dir ${paths.raw_image_dir}
+      --mask-dir ${paths.corrected_mask_dir}
+      --tracking-uri sqlite:///${paths.mlflow_db}
+      --experiment-name ${train.experiment_name}
+      --tile-size ${data.tile_size}
+      --overlap ${data.overlap}
+      --threshold ${evaluate.threshold}
+      --batch-size ${evaluate.batch_size}
+      --num-workers ${evaluate.num_workers}
+      --num-images ${evaluate.num_images}
+      --output ${paths.metrics_dir}/predictions_preview.png
+      --metrics-json ${paths.metrics_dir}/test_metrics.json
+    deps:
+      - training/test_model.py
+      - training/metrics.py
+      - common/mlflow_utils.py
+      - ${paths.splits_dir}/test.csv
+      - ${paths.corrected_mask_dir}
+      # not consumed directly (the model is pulled from MLflow), but this is
+      # what makes evaluate rerun whenever train produces a new model
+      - ${paths.checkpoint_dir}
+    metrics:
+      - ${paths.metrics_dir}/test_metrics.json:
+          cache: false
+    plots:
+      - ${paths.metrics_dir}/predictions_preview.png:
+          cache: false
+
+  # -------------------------------------------------------------------------
+  # 6. Freeze the winning run into the standalone folder the Dockerfile COPYs
+  # -------------------------------------------------------------------------
+  export:
+    cmd: >-
+      python -m deployment.export_model
+      --tracking-uri sqlite:///${paths.mlflow_db}
+      --experiment-name ${train.experiment_name}
+      --output-dir ${paths.exported_model_dir}
+    deps:
+      - deployment/export_model.py
+      - common/mlflow_utils.py
+      - ${paths.checkpoint_dir}
+    outs:
+      - ${paths.exported_model_dir}

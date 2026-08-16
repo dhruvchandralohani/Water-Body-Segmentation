@@ -1,0 +1,28 @@
+# Core numerical and data processing
+numpy==2.2.6
+pandas==2.3.3
+scikit-learn==1.7.1
+pillow==11.3.0
+
+# Computer vision and augmentation
+opencv-python-headless==4.13.0.92
+albumentations==2.0.8
+
+# Deep learning stack
+torch==2.8.0
+torchvision==0.23.0
+segmentation-models-pytorch==0.5.0
+
+# Experiment tracking and tuning
+mlflow==3.15.1
+optuna==4.5.0
+
+# Visualization (used in evaluation preview script)
+matplotlib==3.10.5
+
+# Inference API / service
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+pydantic==2.13.4
+pyyaml==6.0.3

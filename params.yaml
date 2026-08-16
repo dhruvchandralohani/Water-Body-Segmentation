@@ -1,0 +1,188 @@
+# params.yaml -- single source of truth for every tunable knob in the pipeline.
+#
+# DVC reads this file and substitutes ${...} references into the commands in
+# dvc.yaml. Nothing here is read by the Python scripts directly, so the existing
+# argparse interfaces stay exactly as they are -- you can still run any script
+# by hand with explicit flags.
+#
+# Change a value here -> `dvc repro` reruns only the stages that depend on it.
+
+# ---------------------------------------------------------------------------
+# Paths. All relative to the repo root, because DVC always executes from there.
+# ---------------------------------------------------------------------------
+paths:
+  # Raw inputs (DVC-tracked via `dvc add`, not produced by any stage)
+  raw_image_dir: data/raw/images
+  raw_mask_dir: data/raw/masks
+
+  # Intermediate + processed data (stage outputs)
+  manifest: data/interim/manifest.csv
+  corrected_mask_dir: data/processed/masks_corrected
+  splits_dir: data_pipeline/splits
+
+  # Training artifacts
+  checkpoint_dir: training/checkpoints
+  mlflow_db: training/mlflow.db
+  study_db: training/optuna_study.db
+
+  # Evaluation + serving artifacts
+  metrics_dir: metrics
+  exported_model_dir: deployment/exported_model
+
+# ---------------------------------------------------------------------------
+# Stage: audit (mask correction + stratified split)
+# ---------------------------------------------------------------------------
+audit:
+  min_dim: 32                     # drop pair if min(width, height) <= this
+  all_white_thresh: 0.995         # drop pair if corrected mask is >= this much foreground
+  near_black_threshold: 15        # per-pixel RGB sum below this = no-data
+  near_black_exclude_thresh: 0.7  # drop image if this fraction is no-data
+  val_frac: 0.15
+  test_frac: 0.15
+  n_buckets: 5                    # size buckets for stratification
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# Data loading / sampling (shared by train, tune, evaluate)
+# ---------------------------------------------------------------------------
+data:
+  window_min: 64
+  window_max: 2048
+  patch_size: 256
+  fg_bias_ratio: 0.7
+  patches_per_epoch: 8000
+  tile_size: 384
+  overlap: 0.25
+  num_workers: 4
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
+model:
+  encoder_name: mobilenet_v2
+  encoder_weights: imagenet
+  # nargs=3 flag -- kept as a space-separated string so it expands correctly
+  # into the command line. Recalibrate if data.patch_size changes.
+  decoder_atrous_rates: "2 4 6"
+
+# ---------------------------------------------------------------------------
+# Loss
+# ---------------------------------------------------------------------------
+loss:
+  bce_weight: 0.5
+  dice_alpha: 0.5
+  dice_beta: 0.5
+
+# ---------------------------------------------------------------------------
+# Stage: train
+# Values below are Study 2 / Trial 8 -- the config behind the final model.
+# ---------------------------------------------------------------------------
+train:
+  experiment_name: water_body_segmentation
+  lr: 9.18e-05
+  weight_decay: 6.10e-04
+  dropout: 0.442
+  batch_size: 8                 # fixed by the 4GB GPU, not searched
+  epochs: 60
+  early_stopping_patience: 10
+  min_delta: 0.001
+  lr_patience: 5
+  seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: tune (frozen -- run on demand, not part of a plain `dvc repro`)
+# ---------------------------------------------------------------------------
+tune:
+  n_trials: 30
+  study_name: water_body_tuning
+  epochs: 15                    # per-trial budget (Study 2 setting)
+  pruner_startup_trials: 5
+  pruner_warmup_epochs: 3
+
+# ---------------------------------------------------------------------------
+# Stage: benchmark (frozen -- run on demand)
+#
+# Fixed-hyperparameter architecture comparison. Every variant runs at the
+# train.* hyperparameters above, the same seed, splits, loss and augmentation.
+# That is deliberate and it is the benchmark's main limitation: those
+# hyperparameters were tuned on deeplabv3plus_mbv2_recalibrated, so the
+# comparison is biased toward it. Say so when reporting the result.
+#
+# DVC foreach has no cross-product, so multi-seed means duplicate entries
+# with different seed values (e.g. unet_mbv2_s7).
+# ---------------------------------------------------------------------------
+benchmark:
+  experiment_name: water_body_arch_benchmark
+  epochs: 15                      # same per-variant budget as the Study 2 search
+  variants:
+    # The current production model.
+    deeplabv3plus_mbv2_recalibrated:
+      arch: deeplabv3plus
+      encoder_name: mobilenet_v2
+      decoder_atrous_rates: "2 4 6"
+      seed: 42
+    # Encoder held constant, rates reverted to smp defaults. Isolates the ASPP
+    # recalibration claim -- the one factor that changes.
+    deeplabv3plus_mbv2_default_rates:
+      arch: deeplabv3plus
+      encoder_name: mobilenet_v2
+      decoder_atrous_rates: "12 24 36"
+      seed: 42
+    # The actual second architecture: full-resolution skip connections instead
+    # of ASPP, chosen against the thin-feature failure mode. Note that U-Net has
+    # no ASPP dropout knob, so it runs without that regularization -- an
+    # asymmetry model.py warns about at build time.
+    unet_mbv2:
+      arch: unet
+      encoder_name: mobilenet_v2
+      decoder_atrous_rates: "2 4 6"   # dropped by unet; kept so the grid is uniform
+      seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: capacity (frozen -- run on demand)
+#
+# Answers "dropout at 0.44 instead of shrinking the model or freezing layers".
+# Every arm targets the same overfitting, through a different mechanism, at
+# otherwise identical settings. Judge on the train/val gap and the epoch where
+# val_iou peaks, not on val_iou alone -- these are anti-overfitting
+# interventions, so "delays the divergence" is the effect to look for.
+# ---------------------------------------------------------------------------
+capacity:
+  experiment_name: water_body_capacity
+  epochs: 30                      # longer than the arch benchmark: overfitting
+                                  # onset was around epoch 6-7, and the point is
+                                  # to see whether each arm moves it
+  variants:
+    # Current model: high dropout, everything trainable.
+    baseline_dropout_044:
+      dropout: 0.442
+      freeze_encoder: false
+      decoder_channels: null
+      seed: 42
+    # Same capacity, no regularization -- shows what dropout was covering for.
+    baseline_no_dropout:
+      dropout: 0.0
+      freeze_encoder: false
+      decoder_channels: null
+      seed: 42
+    # Fewer trainable parameters instead of noisier ones.
+    frozen_encoder:
+      dropout: 0.0
+      freeze_encoder: true
+      decoder_channels: null
+      seed: 42
+    # Smaller decoder instead of a regularized full-size one.
+    small_decoder:
+      dropout: 0.0
+      freeze_encoder: false
+      decoder_channels: 128
+      seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: evaluate
+# ---------------------------------------------------------------------------
+evaluate:
+  threshold: 0.5
+  batch_size: 8
+  num_workers: 0
+  num_images: 16                # how many test images to render in the preview
