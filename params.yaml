@@ -20,8 +20,12 @@ paths:
   corrected_mask_dir: data/processed/masks_corrected
   splits_dir: data_pipeline/splits
 
-  # Training artifacts
-  checkpoint_dir: training/checkpoints
+  # Training artifacts. These four MUST be siblings, never nested: DVC rejects
+  # a tracked output that lives inside another stage's tracked output.
+  checkpoint_dir: training/checkpoints                       # train stage
+  tune_checkpoint_dir: training/checkpoints_tune             # tune (untracked, transient)
+  benchmark_checkpoint_dir: training/checkpoints_benchmark   # benchmark arms
+  capacity_checkpoint_dir: training/checkpoints_capacity     # capacity arms
   mlflow_db: training/mlflow.db
   study_db: training/optuna_study.db
 
@@ -34,7 +38,14 @@ paths:
 # ---------------------------------------------------------------------------
 audit:
   min_dim: 32                     # drop pair if min(width, height) <= this
-  all_white_thresh: 0.995         # drop pair if corrected mask is >= this much foreground
+  # Applied to the ORIGINAL mask, before no-data correction -- see the docstring
+  # on exclusion_reason(). A mask painted white over a large black border is an
+  # annotation defect; correction repairs the border and hides the evidence, so
+  # checking the corrected mask misses these entirely.
+  # Do NOT lower this. Max corrected coverage on this dataset is 0.980, and
+  # values descend smoothly from there, so anything under ~0.98 starts deleting
+  # legitimate open-water tiles rather than defects.
+  all_white_thresh: 0.995         # drop pair if the original mask is >= this much foreground
   near_black_threshold: 15        # per-pixel RGB sum below this = no-data
   near_black_exclude_thresh: 0.7  # drop image if this fraction is no-data
   val_frac: 0.15

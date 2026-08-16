@@ -1,16 +1,21 @@
 """
 audit.py
 
-Dataset audit for the water body segmentation dataset. Three passes, in order:
+Dataset audit for the water body segmentation dataset. Four passes, ordered
+cheapest-filter-first so that expensive work is never spent on pairs that are
+about to be discarded:
 
 1. Size filter -- drop pairs whose image is degenerate in either dimension.
-   Runs off the manifest before any file is opened, so tiny images never
-   cost an image read or a mask write.
-2. Mask correction -- no-data (near-black) regions in the source image
+   Runs off the manifest, before any file is opened.
+2. All-foreground filter -- drop pairs whose mask is painted almost entirely
+   white. Reads the mask only, and MUST run before pass 3: no-data correction
+   repairs the black border of such a mask, dropping its measured coverage far
+   below any sensible threshold and destroying the evidence of the defect.
+   Order is load-bearing here, not stylistic.
+3. Mask correction -- no-data (near-black) regions in the source image
    occasionally get mislabeled as foreground water. This zeroes out the mask
-   wherever the image is no-data, then excludes pairs that are mostly no-data
-   or whose (corrected) mask is degenerately all-foreground.
-3. Stratified train/val/test split by image-size bucket.
+   wherever the image is no-data, then excludes pairs that are mostly no-data.
+4. Stratified train/val/test split by image-size bucket.
 
 The audit also quantifies pixel-level class balance over the surviving pairs
 and writes it to JSON. That number is what justifies foreground-biased patch
@@ -81,6 +86,58 @@ def filter_by_size(manifest_df, min_dim=32):
     return kept_df, excluded_records
 
 
+def filter_all_white_masks(manifest_df, mask_dir, all_white_thresh=0.995):
+    """Drop pairs whose mask is degenerately all-foreground, before any correction.
+
+    A mask painted white across an entire tile is an annotation defect: whatever
+    the image shows, the annotator did not look. This has to run before no-data
+    correction, because correction zeroes the mask over the black border and
+    leaves coverage looking unremarkable -- a 40% no-data border turns a 1.00
+    coverage into 0.60, which no threshold would flag.
+
+    Reads only the mask, so it costs one grayscale decode per pair and spares
+    the image read for everything it rejects.
+
+    Args:
+        manifest_df: DataFrame of pairs surviving the size filter.
+        mask_dir: Directory containing the original, uncorrected masks.
+        all_white_thresh: Foreground fraction at or above which the mask is
+            treated as degenerate.
+
+    Returns:
+        A tuple of the kept DataFrame and a list of exclusion record dicts.
+    """
+    mask_dir = Path(mask_dir)
+    excluded_records = []
+    keep = []
+
+    for _, row in manifest_df.iterrows():
+        filename = row["filename"]
+        mask = cv2.imread(str(mask_dir / filename), cv2.IMREAD_GRAYSCALE)
+
+        if mask is None:
+            excluded_records.append(
+                {"filename": filename, "excluded": True, "reason": "missing mask file"}
+            )
+            continue
+
+        coverage = float((mask > 127).sum()) / mask.size
+        if coverage >= all_white_thresh:
+            excluded_records.append(
+                {
+                    "filename": filename,
+                    "excluded": True,
+                    "reason": "mask is all-foreground",
+                    "original_coverage": coverage,
+                }
+            )
+        else:
+            keep.append(filename)
+
+    kept_df = manifest_df[manifest_df["filename"].isin(set(keep))].reset_index(drop=True)
+    return kept_df, excluded_records
+
+
 def analyze_and_correct_mask(image, mask, near_black_threshold=15):
     """Identify near-black regions and correct the mask accordingly.
 
@@ -114,28 +171,23 @@ def analyze_and_correct_mask(image, mask, near_black_threshold=15):
     return corrected_mask, stats
 
 
-def exclusion_reason(stats, near_black_exclude_thresh=0.7, all_white_thresh=0.995):
-    """Determine why a pair should be excluded, if it should be at all.
+def exclusion_reason(stats, near_black_exclude_thresh=0.7):
+    """Determine why a pair should be excluded after correction, if it should be.
 
-    The all-foreground check runs against the *corrected* mask, because that is
-    the mask training would actually consume. A pair whose original mask was
-    all-white but whose image was largely no-data will have been partially
-    zeroed by correction, and is caught by the no-data rule instead.
+    All-foreground masks are already gone by this point -- filter_all_white_masks
+    removes them before correction runs, precisely so that this function never
+    has to reason about a mask that correction has already altered.
 
     Args:
         stats: Dictionary of computed mask statistics for the image.
         near_black_exclude_thresh: No-data fraction above which the pair is
             excluded.
-        all_white_thresh: Corrected foreground fraction at or above which the
-            mask is treated as degenerately all-white.
 
     Returns:
         A reason string, or an empty string if the pair should be kept.
     """
     if stats["near_black_fraction"] > near_black_exclude_thresh:
         return "mostly no-data image"
-    if stats["corrected_coverage"] >= all_white_thresh:
-        return "mask is all-foreground"
     return ""
 
 
@@ -146,7 +198,6 @@ def correct_and_filter(
     corrected_mask_dir,
     near_black_threshold=15,
     near_black_exclude_thresh=0.7,
-    all_white_thresh=0.995,
 ):
     """Correct masks for no-data pixels and filter out degenerate pairs.
 
@@ -157,7 +208,6 @@ def correct_and_filter(
         corrected_mask_dir: Directory where corrected masks are written.
         near_black_threshold: Intensity threshold used for no-data detection.
         near_black_exclude_thresh: No-data fraction threshold for exclusion.
-        all_white_thresh: Foreground fraction threshold for all-white exclusion.
 
     Returns:
         A tuple of the kept manifest DataFrame and a per-image report DataFrame.
@@ -178,7 +228,7 @@ def correct_and_filter(
             continue
 
         corrected_mask, stats = analyze_and_correct_mask(image, mask, near_black_threshold)
-        reason = exclusion_reason(stats, near_black_exclude_thresh, all_white_thresh)
+        reason = exclusion_reason(stats, near_black_exclude_thresh)
 
         # Only write masks that survive; an excluded pair has no downstream use
         # and writing it would leave orphans in the corrected-mask directory.
@@ -368,7 +418,8 @@ def main():
         "--all-white-thresh",
         type=float,
         default=0.995,
-        help="Exclude pairs whose corrected mask is at least this fraction foreground.",
+        help="Exclude pairs whose ORIGINAL mask is at least this fraction foreground. "
+        "Checked before no-data correction, which would otherwise mask the defect.",
     )
     parser.add_argument("--near-black-threshold", type=int, default=15)
     parser.add_argument("--near-black-exclude-thresh", type=float, default=0.7)
@@ -384,7 +435,7 @@ def main():
     df = load_manifest(args.manifest)
     n_start = len(df)
 
-    # Pass 1: size filter, before any file is opened.
+    # Pass 1: size filter, off the manifest, before any file is opened.
     kept_df, size_excluded = filter_by_size(df, min_dim=args.min_dim)
     print(f"Size filter: {len(size_excluded)} pairs excluded at min dimension <= {args.min_dim}px")
 
@@ -392,6 +443,15 @@ def main():
     # column-less DataFrame would break the reason tally further down.
     report_df = pd.DataFrame(size_excluded, columns=["filename", "excluded", "reason"])
     report_df["excluded"] = report_df["excluded"].astype(bool)
+
+    # Pass 2: all-foreground masks, before correction can disguise them.
+    if args.mask_dir:
+        kept_df, all_white_excluded = filter_all_white_masks(
+            kept_df, args.mask_dir, all_white_thresh=args.all_white_thresh
+        )
+        print(f"All-foreground filter: {len(all_white_excluded)} pairs excluded at coverage >= {args.all_white_thresh}")
+        if all_white_excluded:
+            report_df = pd.concat([report_df, pd.DataFrame(all_white_excluded)], ignore_index=True)
 
     if args.skip_correction:
         if args.class_balance_json:
@@ -409,7 +469,7 @@ def main():
         if missing:
             parser.error(f"{', '.join(missing)} required unless --skip-correction is set")
 
-        # Pass 2: mask correction and content-based exclusion.
+        # Pass 3: mask correction and no-data exclusion.
         kept_df, correction_report = correct_and_filter(
             kept_df,
             args.image_dir,
@@ -417,7 +477,6 @@ def main():
             args.corrected_mask_dir,
             near_black_threshold=args.near_black_threshold,
             near_black_exclude_thresh=args.near_black_exclude_thresh,
-            all_white_thresh=args.all_white_thresh,
         )
         report_df = pd.concat([report_df, correction_report], ignore_index=True)
 
@@ -437,7 +496,7 @@ def main():
         # Size reasons embed the actual dimension, so collapse them for the tally.
         print(f"  {count:>5}  {reason}")
 
-    # Pass 3: stratified split.
+    # Pass 4: stratified split.
     kept_df = assign_size_bucket(kept_df, n_buckets=args.n_buckets)
     train_df, val_df, test_df = split_dataset(
         kept_df, val_frac=args.val_frac, test_frac=args.test_frac, random_state=args.seed

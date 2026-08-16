@@ -2,9 +2,33 @@
 #
 #   dvc repro          -> runs the full chain, skipping anything already current
 #   dvc repro train    -> runs up to and including `train`
-#   dvc repro tune     -> runs the frozen tuning stage explicitly
+#   dvc stage list     -> shows every stage, including foreach arms
 #   dvc dag            -> prints the graph
 #   dvc metrics show   -> prints metrics/test_metrics.json
+#
+# RUNNING A FROZEN STAGE: `frozen: true` means DVC treats the stage as
+# permanently up to date -- `dvc repro` will NOT execute it, and neither will
+# `dvc repro <stage>` or `dvc repro -f <stage>`. That is the point: `tune`,
+# `benchmark` and `capacity` each cost hours of GPU time, and they all depend on
+# training/train.py, so without this guard a one-line edit to that file would
+# queue up every arm on the next plain `dvc repro`.
+#
+# The catch: a frozen stage is still checked for its declared outputs, so a
+# stage that has NEVER run fails with "missing data 'source'". Freezing means
+# "already done", not "skip this". To run one for the first time, delete the
+# `frozen: true` line from that stage's `do:` block by hand, run it, then put
+# the line back:
+#
+#     dvc repro capacity              # all four arms
+#     dvc repro capacity@small_decoder  # just one
+#
+# Edit the file rather than using `dvc freeze`/`dvc unfreeze` -- those take
+# stage targets and do not reliably expand a foreach group name. They only
+# toggle this same field anyway.
+#
+# Re-freezing after a run is safe because the outputs then exist. If you later
+# delete a checkpoint directory, that stage will fail verification again until
+# it is unfrozen and re-run.
 #
 # NOTE: training/mlflow.db is deliberately NOT declared as an out anywhere.
 # DVC removes outs before running a stage, which would wipe your entire
@@ -66,8 +90,8 @@ stages:
 
   # -------------------------------------------------------------------------
   # 3. Optuna search. FROZEN: exploration, not part of the retraining path.
-  #    Run it deliberately (`dvc repro tune`), read the winner off the study,
-  #    then write those values into params.yaml:train and repro normally.
+  #    Run it deliberately (see the unfreeze note below), read the winner off
+  #    the study, write those values into params.yaml:train and repro normally.
   #    The study DB uses persist:true so successive runs resume the same study
   #    instead of DVC deleting it first.
   # -------------------------------------------------------------------------
@@ -79,7 +103,7 @@ stages:
       --val-manifest ${paths.splits_dir}/val.csv
       --image-dir ${paths.raw_image_dir}
       --mask-dir ${paths.corrected_mask_dir}
-      --checkpoint-dir ${paths.checkpoint_dir}/tune
+      --checkpoint-dir ${paths.tune_checkpoint_dir}
       --tracking-uri sqlite:///${paths.mlflow_db}
       --experiment-name ${train.experiment_name}
       --study-name ${tune.study_name}
@@ -172,8 +196,8 @@ stages:
       - ${paths.checkpoint_dir}
 
   # -------------------------------------------------------------------------
-  # 4b. Architecture benchmark. FROZEN: run deliberately with `dvc repro
-  #     benchmark`, since it trains one model per variant. Compare the runs in
+  # 4b. Architecture benchmark. FROZEN, because it trains one model per variant
+  #     and must never be swept up by a plain `dvc repro`. Compare the runs in
   #     MLflow -- they share an experiment and are tagged by `arch`.
   #     Before spending the compute, dry-run the grid:
   #         python -m training.model
@@ -192,7 +216,7 @@ stages:
         --run-name ${key}
         --experiment-name ${benchmark.experiment_name}
         --epochs ${benchmark.epochs}
-        --checkpoint-dir ${paths.checkpoint_dir}/benchmark/${key}
+        --checkpoint-dir ${paths.benchmark_checkpoint_dir}/${key}
         --train-manifest ${paths.splits_dir}/train.csv
         --val-manifest ${paths.splits_dir}/val.csv
         --image-dir ${paths.raw_image_dir}
@@ -231,10 +255,10 @@ stages:
         - ${paths.splits_dir}/val.csv
         - ${paths.corrected_mask_dir}
       outs:
-        - ${paths.checkpoint_dir}/benchmark/${key}
+        - ${paths.benchmark_checkpoint_dir}/${key}
 
   # -------------------------------------------------------------------------
-  # 4c. Capacity vs regularization comparison. FROZEN: `dvc repro capacity`.
+  # 4c. Capacity vs regularization comparison. FROZEN, same reason as 4b.
   #     Same shape as the arch benchmark -- one arm per mechanism, everything
   #     else held fixed. Compare in MLflow via the trainable_params and
   #     freeze_encoder params logged per run.
@@ -242,7 +266,6 @@ stages:
   capacity:
     foreach: ${capacity.variants}
     do:
-      frozen: true
       cmd: >-
         python -m training.train
         --dropout ${item.dropout}
@@ -251,7 +274,7 @@ stages:
         --run-name ${key}
         --experiment-name ${capacity.experiment_name}
         --epochs ${capacity.epochs}
-        --checkpoint-dir ${paths.checkpoint_dir}/capacity/${key}
+        --checkpoint-dir ${paths.capacity_checkpoint_dir}/${key}
         --arch deeplabv3plus
         --encoder-name ${model.encoder_name}
         --encoder-weights ${model.encoder_weights}
@@ -292,7 +315,7 @@ stages:
         - ${paths.splits_dir}/val.csv
         - ${paths.corrected_mask_dir}
       outs:
-        - ${paths.checkpoint_dir}/capacity/${key}
+        - ${paths.capacity_checkpoint_dir}/${key}
 
   # -------------------------------------------------------------------------
   # 5. Held-out evaluation. Emits a JSON so `dvc metrics diff` works across
