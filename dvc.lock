@@ -71,3 +71,37 @@ stages:
       hash: md5
       md5: 11eb468ed71038b8bfd8cc8dd607a9f8
       size: 1224
+  sampling_balance:
+    cmd: python -m data_pipeline.measure_sampling --manifest 
+      data_pipeline/splits/train.csv --image-dir data/raw/images --mask-dir 
+      data/processed/masks_corrected --class-balance-json 
+      metrics/class_balance.json --output metrics/sampling_balance.json 
+      --n-patches 2000 --patch-size 256 --window-min 64 --window-max 2048 
+      --num-workers 4 --seed 42
+    deps:
+    - path: data/processed/masks_corrected
+      hash: md5
+      md5: 911f59d19a07efcd853963b07454c2a3.dir
+      size: 137694043
+      nfiles: 2698
+    - path: data_pipeline/measure_sampling.py
+      hash: md5
+      md5: 72ec92aec03dfbac5bd6517f1f43456e
+      size: 7633
+    - path: data_pipeline/patch_dataset.py
+      hash: md5
+      md5: 07df0885ed8a037fd1a815e79a48743f
+      size: 9477
+    - path: data_pipeline/splits/train.csv
+      hash: md5
+      md5: 838d70d6917f583707153dfcf145e124
+      size: 58385
+    - path: metrics/class_balance.json
+      hash: md5
+      md5: 11eb468ed71038b8bfd8cc8dd607a9f8
+      size: 1224
+    outs:
+    - path: metrics/sampling_balance.json
+      hash: md5
+      md5: 5a34e6471fa563aad570abfa2e12c585
+      size: 1861

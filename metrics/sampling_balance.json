@@ -1,0 +1,62 @@
+{
+  "n_patches_per_ratio": 2000,
+  "patch_size": 256,
+  "seed": 42,
+  "dataset_pixel_water_fraction": 0.1842874830498447,
+  "by_ratio": {
+    "0": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.2534429702758789,
+      "median_water_fraction": 0.12725830078125,
+      "p10": 0.0,
+      "p90": 0.8485565185546875,
+      "empty_patch_fraction": 0.1815,
+      "under_1pct_fraction": 0.3415
+    },
+    "0.3": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.3192941665649414,
+      "median_water_fraction": 0.2147064208984375,
+      "p10": 0.0,
+      "p90": 0.9296417236328125,
+      "empty_patch_fraction": 0.1395,
+      "under_1pct_fraction": 0.291
+    },
+    "0.5": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.3518119583129883,
+      "median_water_fraction": 0.258575439453125,
+      "p10": 3.0517578125e-05,
+      "p90": 0.94842529296875,
+      "empty_patch_fraction": 0.0955,
+      "under_1pct_fraction": 0.2155
+    },
+    "0.7": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.4095692825317383,
+      "median_water_fraction": 0.3303985595703125,
+      "p10": 0.00152587890625,
+      "p90": 0.9537353515625,
+      "empty_patch_fraction": 0.0515,
+      "under_1pct_fraction": 0.158
+    },
+    "0.9": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.43299882507324217,
+      "median_water_fraction": 0.370880126953125,
+      "p10": 0.0078582763671875,
+      "p90": 0.9802398681640625,
+      "empty_patch_fraction": 0.0155,
+      "under_1pct_fraction": 0.1075
+    },
+    "1": {
+      "n_patches": 2000,
+      "mean_water_fraction": 0.45439251708984374,
+      "median_water_fraction": 0.40557861328125,
+      "p10": 0.017660522460937512,
+      "p90": 0.9677627563476566,
+      "empty_patch_fraction": 0.0,
+      "under_1pct_fraction": 0.09
+    }
+  }
+}
