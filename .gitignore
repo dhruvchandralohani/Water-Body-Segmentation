@@ -1,5 +1,9 @@
-# Raw source data -- copied in by hand, tracked by DVC if you ran `dvc add`.
-data/raw
+# Raw source data. Scoped rather than a bare `data/raw`: git cannot re-include
+# a file whose parent directory is excluded, so ignoring the directory outright
+# would make data/raw/*.dvc unstageable and the data pins uncommittable.
+data/raw/**
+!data/raw/*.dvc
+!data/raw/.gitignore
 
 # MLflow. Deliberately NOT a DVC output (DVC deletes outputs before a stage
 # runs, which would wipe experiment history), so it needs ignoring here.

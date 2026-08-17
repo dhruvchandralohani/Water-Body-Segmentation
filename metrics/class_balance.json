@@ -1,0 +1,42 @@
+{
+  "overall": {
+    "n_images": 2698,
+    "total_pixels": 1271387319,
+    "foreground_pixels": 234300769,
+    "foreground_fraction": 0.1842874830498447,
+    "background_per_foreground": 4.426304507775645
+  },
+  "per_image_foreground_fraction": {
+    "mean": 0.27914988938893986,
+    "median": 0.2510489946684057,
+    "p05": 0.01074367224507265,
+    "p25": 0.13097173973418513,
+    "p75": 0.4031763692986712,
+    "p95": 0.6442085613547878
+  },
+  "images_under_1pct_water": 127,
+  "images_over_50pct_water": 381,
+  "by_split": {
+    "train": {
+      "n_images": 1888,
+      "total_pixels": 900070766,
+      "foreground_pixels": 174908770,
+      "foreground_fraction": 0.1943277979989409,
+      "background_per_foreground": 4.145944174211505
+    },
+    "val": {
+      "n_images": 405,
+      "total_pixels": 205280807,
+      "foreground_pixels": 30383972,
+      "foreground_fraction": 0.14801175250640944,
+      "background_per_foreground": 5.756220253230881
+    },
+    "test": {
+      "n_images": 405,
+      "total_pixels": 166035746,
+      "foreground_pixels": 29008027,
+      "foreground_fraction": 0.1747095291154954,
+      "background_per_foreground": 4.723786247165311
+    }
+  }
+}

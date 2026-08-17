@@ -1,0 +1,73 @@
+schema: '2.0'
+stages:
+  build_manifest:
+    cmd: python -m data_pipeline.build_manifest --image-dir data/raw/images 
+      --output data/interim/manifest.csv
+    deps:
+    - path: data/raw/images
+      hash: md5
+      md5: 3acdf4914aef2e61b5a1537f51051106.dir
+      size: 195191995
+      nfiles: 2841
+    - path: data_pipeline/build_manifest.py
+      hash: md5
+      md5: 188f49158ebe80f9e54e6504e4ee2da2
+      size: 1814
+    outs:
+    - path: data/interim/manifest.csv
+      hash: md5
+      md5: bde16275ed655f7a98699281374c03f9
+      size: 82195
+  audit:
+    cmd: python -m data_pipeline.audit --manifest data/interim/manifest.csv 
+      --image-dir data/raw/images --mask-dir data/raw/masks --corrected-mask-dir
+      data/processed/masks_corrected --output-dir data_pipeline/splits 
+      --class-balance-json metrics/class_balance.json --min-dim 32 
+      --all-white-thresh 0.995 --near-black-threshold 15 
+      --near-black-exclude-thresh 0.7 --val-frac 0.15 --test-frac 0.15 
+      --n-buckets 5 --seed 42
+    deps:
+    - path: data/interim/manifest.csv
+      hash: md5
+      md5: bde16275ed655f7a98699281374c03f9
+      size: 82195
+    - path: data/raw/images
+      hash: md5
+      md5: 3acdf4914aef2e61b5a1537f51051106.dir
+      size: 195191995
+      nfiles: 2841
+    - path: data/raw/masks
+      hash: md5
+      md5: e03e51d1a88f74af6b97be26fd99d186.dir
+      size: 92152627
+      nfiles: 2841
+    - path: data_pipeline/audit.py
+      hash: md5
+      md5: f7836f9fee13bb71ab1f55b275cb4c87
+      size: 20832
+    outs:
+    - path: data/processed/masks_corrected
+      hash: md5
+      md5: 911f59d19a07efcd853963b07454c2a3.dir
+      size: 137694043
+      nfiles: 2698
+    - path: data_pipeline/splits/mask_correction_report.csv
+      hash: md5
+      md5: 6815fbffae988f308e7555410ef962d3
+      size: 287973
+    - path: data_pipeline/splits/test.csv
+      hash: md5
+      md5: 58a86b948d7ed048dbd5eb2f68c6a1ee
+      size: 12558
+    - path: data_pipeline/splits/train.csv
+      hash: md5
+      md5: 838d70d6917f583707153dfcf145e124
+      size: 58385
+    - path: data_pipeline/splits/val.csv
+      hash: md5
+      md5: 11a39f3ccc2368fc782debc43ffd6f30
+      size: 12552
+    - path: metrics/class_balance.json
+      hash: md5
+      md5: 11eb468ed71038b8bfd8cc8dd607a9f8
+      size: 1224
