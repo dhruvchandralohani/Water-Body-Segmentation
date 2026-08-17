@@ -231,7 +231,7 @@ def measure_peak_vram(model, batch_size=8, patch_size=256, in_channels=3, iterat
     """
     import torch
 
-    from training.loss import BCEDiceLoss
+    from training.loss import CombinedLoss
 
     if not torch.cuda.is_available():
         return {"available": False, "oom": False, "allocated_mb": 0.0, "reserved_mb": 0.0}
@@ -241,7 +241,7 @@ def measure_peak_vram(model, batch_size=8, patch_size=256, in_channels=3, iterat
 
     model = model.cuda().train()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-    criterion = BCEDiceLoss()
+    criterion = CombinedLoss()
 
     x = torch.randn(batch_size, in_channels, patch_size, patch_size, device="cuda")
     y = torch.randint(0, 2, (batch_size, 1, patch_size, patch_size), device="cuda").float()

@@ -40,9 +40,25 @@ def get_train_transform(mean=IMAGENET_MEAN, std=IMAGENET_STD):
     """
     return A.Compose(
         [
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.5),
-            A.RandomRotate90(p=0.5),
+            # Overhead imagery has no canonical orientation: a satellite tile
+            # rotated 90 degrees or mirrored is another perfectly plausible tile,
+            # and the water label is unchanged by it. The symmetry group of a
+            # square, D4, is therefore an exact invariance of this data -- not an
+            # approximation traded off against realism, the way it would be for
+            # natural images where an upside-down dog is out of distribution.
+            #
+            # Naming the group also fixes the sampling. Three independent coin
+            # flips (HFlip .5 + VFlip .5 + Rot90 .5) do reach all 8 elements, but
+            # unevenly: measured over 400k draws they give 0.186 to the identity
+            # and each axis-aligned element, against 0.062 for every element
+            # involving a 90-degree turn -- a 3:1 skew, with ~19% of patches
+            # passing through geometrically untouched. If the invariance is exact,
+            # the correct distribution over it is uniform.
+            #
+            # A.D4(p=1.0) draws uniformly from all 8. VerticalFlip is dropped
+            # because it is redundant: v == r180 . h, so it adds no reachable
+            # element and only skews the distribution.
+            A.D4(p=1.0),
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=15, val_shift_limit=10, p=0.3),
             A.GaussNoise(std_range=(0.05, 0.15), p=0.2),

@@ -1,152 +1,121 @@
 # Water Body Segmentation
 
-This project trains and deploys a segmentation model for identifying water bodies from aerial imagery. The workflow includes dataset preparation, training, evaluation, MLflow tracking, Optuna-based hyperparameter tuning, model export, and a FastAPI inference service.
+Segmentation of water bodies in satellite imagery, built as a reproducible DVC
+pipeline: data audit, training with MLflow tracking, Optuna search, held-out
+evaluation, and a Dockerised FastAPI inference service.
+
+Every number the project reports is produced by a pipeline stage and written to
+a versioned artifact. Nothing is derived by hand.
 
 ## Project structure
 
-- data_pipeline/: dataset manifest generation, mask auditing/correction, tiling, stitching, and data loading
-- training/: model definition, training loop, evaluation metrics, MLflow tracking, Optuna tuning, and test-time visualization
-- deployment/: model export, FastAPI serving, Docker packaging, and static UI assets
-- common/: shared logging and MLflow helpers
+```
+data_pipeline/   manifest building, dataset audit, patch/tile datasets, transforms
+training/        model, loss, metrics, training loop, Optuna search, evaluation
+deployment/      model export, FastAPI service, Dockerfile, static UI
+common/          shared logging and MLflow helpers
+dvc.yaml         the pipeline DAG
+params.yaml      every tunable value, and the single source of truth for them
+```
 
-## Requirements
+## Setup
 
-- Python 3.10+ (3.12 is used in the provided Dockerfile)
-- PyTorch and torchvision installed for your platform
-- A CUDA-capable GPU is recommended for training, but CPU is supported for inference
-
-Install the Python dependencies:
+Python 3.10+ (3.12 in the Dockerfile). A CUDA GPU is recommended for training;
+inference runs on CPU.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If PyTorch is not already installed for your environment, install it separately for your platform before running the project commands below.
-
-## Dataset layout
-
-The training and evaluation scripts expect:
-
-- a manifest CSV with columns `filename`, `width`, and `height`
-- image files in an image directory
-- mask files in a mask directory
-- train/validation/test split CSV files
-
-A typical layout is:
-
-```text
-data_pipeline/
-  Data/
-    manifest.csv
-    images/
-    masks/
-  splits/
-    train.csv
-    val.csv
-    test.csv
-```
-
-## 1. Prepare the dataset
-
-If you need to rebuild the manifest from the current image directory:
+Put the dataset where `params.yaml:paths` expects it, then let DVC track it:
 
 ```bash
-python data_pipeline/build_manifest.py --image-dir "data_pipeline/Data/images" --output "data_pipeline/Data/manifest.csv"
+dvc init
+dvc add data/raw/images data/raw/masks
 ```
 
-To audit and correct masks, then create split CSV files:
+Copy the data into the repo rather than pointing at another drive. An external
+path cannot be hashed or restored, which is most of what `dvc.lock` is for.
+
+## Running the pipeline
 
 ```bash
-python data_pipeline/audit.py \
-  --manifest "data_pipeline/Data/manifest.csv" \
-  --image-dir "data_pipeline/Data/images" \
-  --mask-dir "data_pipeline/Data/masks" \
-  --corrected-mask-dir "data_pipeline/Data/masks" \
-  --output-dir "data_pipeline/splits"
+dvc repro evaluate      # audit -> train -> evaluate
+dvc repro export        # freeze the best run into deployment/exported_model
+dvc dag                 # show the graph
+dvc metrics show        # class balance, sampling balance, test metrics
 ```
 
-> Adjust the paths to match your local dataset structure if it differs from the workspace layout.
+Name a target rather than running a bare `dvc repro`. The experiment stages
+below are frozen and would fail output verification before they have ever run.
 
-## 2. Train a model
+### Pipeline stages
 
-Run training with the provided split files:
+| stage | what it produces |
+| --- | --- |
+| `build_manifest` | `filename,width,height` for every source image |
+| `audit` | corrected masks, train/val/test splits, `metrics/class_balance.json` |
+| `sampling_balance` | `metrics/sampling_balance.json` -- effective foreground balance per `fg_bias_ratio` |
+| `train` | checkpoints, MLflow run, registered model version |
+| `evaluate` | `metrics/test_metrics.json`, prediction preview |
+| `export` | standalone artifact the Dockerfile copies |
+
+The audit runs four passes, cheapest filter first: size, all-foreground masks,
+no-data mask correction, then the stratified split. The all-foreground pass
+must precede correction -- correction repairs the black border of a
+white-painted mask and hides the defect.
+
+### Experiment stages (frozen)
+
+`tune`, `benchmark`, `capacity`, `lossablation` and `batching` each cost hours
+of GPU time and all depend on `training/train.py`, so a one-line edit to that
+file would otherwise queue every one of them on the next `dvc repro`.
+`frozen: true` prevents that.
+
+To run one, delete the `frozen: true` line from its `do:` block, run it, and put
+the line back. Editing the file is more reliable than `dvc freeze`/`dvc unfreeze`,
+which do not expand a `foreach` group name. Note that freezing means "already
+done", not "skip this": a frozen stage that has never run fails with
+`missing data 'source'`.
+
+| stage | question it answers |
+| --- | --- |
+| `tune` | Optuna search over lr, weight decay, dropout |
+| `benchmark` | Does the ASPP dilation recalibration hold? Does a different architecture do better on thin features? |
+| `capacity` | Is high dropout the right response to overfitting, versus freezing the encoder or shrinking the decoder? |
+| `lossablation` | BCE+Dice against Tversky recall bias, weighted BCE, and focal loss |
+| `batching` | Native batch 16 against gradient accumulation to the same effective batch -- isolates BatchNorm batch size |
+
+## Configuration
+
+`params.yaml` holds every value. `dvc.yaml` interpolates it into stage commands,
+and `training/train.py` reads the same file for its argparse defaults, so a
+hand-run cannot silently diverge from a pipeline run.
+
+Two things live outside DVC's output tracking on purpose:
+
+- `training/mlflow.db` and `mlruns/` -- DVC deletes a stage's outputs before
+  running it, which would erase experiment history on every `dvc repro`.
+- `metrics/*.json` are declared `cache: false`, so git versions them and
+  `dvc metrics diff` works across commits.
+
+## Serving
 
 ```bash
-python training/train.py \
-  --train-manifest "data_pipeline/splits/train.csv" \
-  --val-manifest "data_pipeline/splits/val.csv" \
-  --image-dir "data_pipeline/Data/images" \
-  --mask-dir "data_pipeline/Data/masks" \
-  --checkpoint-dir "training/checkpoints"
+docker build -f deployment/Dockerfile -t water-seg .
+docker run -p 8000:8000 water-seg
 ```
 
-Training logs and metrics are tracked through MLflow and stored in the local MLflow database under the project.
+`GET /` serves the UI, `GET /health` reports model metadata, `POST /predict`
+accepts an image and returns a mask (`?format=png` for a rendered overlay).
 
-## 3. Run hyperparameter tuning
+## Housekeeping
 
-To search for better hyperparameters with Optuna:
-
-```bash
-python training/tune.py \
-  --train-manifest "data_pipeline/splits/train.csv" \
-  --val-manifest "data_pipeline/splits/val.csv" \
-  --image-dir "data_pipeline/Data/images" \
-  --mask-dir "data_pipeline/Data/masks" \
-  --epochs 8 \
-  --n-trials 20
+```powershell
+.\scripts\clean_artifacts.ps1              # preview what a reset would remove
+.\scripts\clean_artifacts.ps1 -Execute -CollectCache
 ```
 
-## 4. Evaluate the trained model
-
-Generate a preview of predictions for a handful of test images:
-
-```bash
-python training/test_model.py \
-  --test-manifest "data_pipeline/splits/test.csv" \
-  --image-dir "data_pipeline/Data/images" \
-  --mask-dir "data_pipeline/Data/masks" \
-  --num-images 4 \
-  --output "predictions_preview.png"
-```
-
-Use `--run-id` if you want to evaluate a specific MLflow run instead of the best run discovered automatically.
-
-## 5. Export the model
-
-Export the best model bundle to a standalone directory for deployment:
-
-```bash
-python deployment/export_model.py --output-dir "deployment/exported_model"
-```
-
-## 6. Run the local inference service
-
-Start the FastAPI app from the deployment directory:
-
-```bash
-cd deployment
-uvicorn serve:app --host 0.0.0.0 --port 8000
-```
-
-The service exposes:
-
-- `/health` for status checks
-- `/predict` for uploading an image and receiving a segmentation result
-
-You can also open the static UI from the service root.
-
-## 7. Build and run with Docker
-
-From the project root:
-
-```bash
-python deployment/export_model.py --output-dir "deployment/exported_model"
-docker build -f deployment/Dockerfile -t water-body-inference .
-docker run -p 8000:8000 water-body-inference
-```
-
-## Notes
-
-- The project uses a local MLflow tracking database for experiment logging.
-- The exported model is consumed by the deployment service without needing a live MLflow backend.
-- If you change the patch size or data layout, review the training and inference configuration values carefully.
+Dry run by default, refuses to run outside the repo root, and never touches
+`data/raw`. Do not reach for `git clean -xdf` instead -- DVC gitignores its
+outputs, so that takes the raw data with it.

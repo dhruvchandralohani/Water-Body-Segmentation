@@ -1,9 +1,13 @@
 """
 train.py
 
-Training loop tying together data.py (loaders), model.py (DeepLabV3+),
-loss.py (BCE+Dice), metrics.py (per-epoch validation), and tracking.py
+Training loop tying together data.py (loaders), model.py (selectable
+architecture, DeepLabV3+ by default), loss.py (selectable pixel term plus a
+Tversky region term), metrics.py (per-epoch validation), and tracking.py
 (MLflow logging + model registry).
+
+Argument defaults are read from params.yaml, the same file dvc.yaml resolves
+its commands from, so a hand-run cannot silently diverge from a pipeline run.
 
 run_training(args, report_callback=None) holds the actual training loop
 and returns the best validation IoU; main() is a thin CLI wrapper around
@@ -11,13 +15,22 @@ it. tune.py calls run_training() directly, once per trial, with a
 callback that reports progress to Optuna and can prune the trial early.
 
 Usage:
-    python train.py --train-manifest splits/train.csv --val-manifest splits/val.csv \
-        --image-dir images/ --mask-dir masks_corrected/ --checkpoint-dir checkpoints/
+    python -m training.train \
+        --train-manifest data_pipeline/splits/train.csv \
+        --val-manifest data_pipeline/splits/val.csv \
+        --image-dir data/raw/images --mask-dir data/processed/masks_corrected \
+        --checkpoint-dir training/checkpoints \
+        --tracking-uri sqlite:///training/mlflow.db
+
+    Normally you would not: `dvc repro train` runs exactly this with every
+    value resolved from params.yaml.
 """
 
 import argparse
 import time
 from pathlib import Path
+
+import yaml
 
 import torch
 
@@ -27,13 +40,13 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from data_pipeline.data import get_eval_loader, get_train_loader
 from common.logging_setup import log_run_separator, setup_logger
-from training.loss import BCEDiceLoss
+from training.loss import CombinedLoss
 from training.metrics import SegmentationMetrics
 from training.model import build_model, freeze_encoder
 from training.tracking import ExperimentTracker
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=()):
+def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=(), accum_steps=1):
     """Train the model for one epoch over the provided training loader.
 
     Args:
@@ -45,6 +58,16 @@ def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=
         frozen_modules: Modules to hold in eval() mode. model.train() walks the
             whole tree and would otherwise put frozen BatchNorm layers back into
             training mode, letting their running statistics drift every epoch.
+        accum_steps: Micro-batches to accumulate before each optimizer step.
+            Effective batch size is loader batch size * accum_steps.
+
+            This buys the OPTIMIZATION behaviour of a large batch, not all of it.
+            BatchNorm normalises over each micro-batch independently, so
+            accumulating 4 x 8 gives gradients averaged over 32 samples while the
+            normalisation statistics remain 8-sample estimates. Where small-batch
+            training suffers from noisy BN statistics, accumulation does not fix
+            it -- only a larger real batch, or a batch-independent norm such as
+            GroupNorm, does.
 
     Returns:
         The mean training loss across the epoch.
@@ -52,18 +75,37 @@ def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=
     model.train()
     for module in frozen_modules:
         module.eval()
+
     losses = []
+    optimizer.zero_grad(set_to_none=True)
+    pending = 0
+
     for images, masks in loader:
         images = images.to(device)
         masks = masks.to(device)
 
-        optimizer.zero_grad()
         logits = model(images)
         loss = criterion(logits, masks)
-        loss.backward()
-        optimizer.step()
 
-        losses.append(loss.item())
+        # Divide so the accumulated gradient is the MEAN over the effective
+        # batch rather than the sum. Without this the update is accum_steps
+        # times too large and a tuned learning rate stops meaning what it meant.
+        (loss / accum_steps).backward()
+        losses.append(loss.item())  # unscaled, so the logged value stays comparable
+        pending += 1
+
+        if pending == accum_steps:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            pending = 0
+
+    # Flush a trailing partial group; otherwise its gradients are computed and
+    # then thrown away. Such a group is scaled by accum_steps but holds fewer
+    # micro-batches, so its update is proportionally smaller -- immaterial when
+    # patches_per_epoch / batch_size divides evenly, as it does at 8000 / 8.
+    if pending:
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
     return sum(losses) / len(losses)
 
@@ -103,8 +145,115 @@ def validate(model, loader, device, criterion=None, threshold=0.5):
     return summary
 
 
+# Fallbacks used only when params.yaml cannot be found or read. They exist so
+# the script still runs standalone, not as a second place to edit values.
+_FALLBACK_DEFAULTS = {
+    "window_min": 64, "window_max": 2048, "patch_size": 256, "fg_bias_ratio": 0.7,
+    "patches_per_epoch": 8000, "tile_size": 384, "overlap": 0.25, "num_workers": 4,
+    "encoder_name": "mobilenet_v2", "encoder_weights": "imagenet",
+    "decoder_atrous_rates": [2, 4, 6],
+    "bce_weight": 0.5, "dice_alpha": 0.5, "dice_beta": 0.5,
+    "lr": 1e-3, "weight_decay": 0.0, "dropout": 0.5, "batch_size": 8, "epochs": 50,
+    "early_stopping_patience": 6, "min_delta": 0.001, "lr_patience": 3, "seed": 42,
+    "experiment_name": "water_body_segmentation",
+}
+
+
+def load_param_defaults(path=None):
+    """Read argparse defaults from params.yaml so there is one source of truth.
+
+    The pipeline passes every value explicitly on the command line, so these
+    defaults only bite when the script is run by hand. That is exactly when
+    drift is dangerous: hardcoded defaults silently fell out of step with the
+    tuned values in params.yaml (lr defaulted to 1e-3 against a tuned 9.18e-05,
+    an 11x gap), so a manual run looked like a reproduction and was not.
+    Reading the same file the pipeline reads makes that divergence impossible
+    rather than merely discouraged.
+
+    Args:
+        path: Explicit params.yaml path. Defaults to the repo root beside this
+            package.
+
+    Returns:
+        A flat mapping of parameter name to value, falling back to
+        _FALLBACK_DEFAULTS for anything missing.
+    """
+    defaults = dict(_FALLBACK_DEFAULTS)
+
+    path = Path(path) if path else Path(__file__).resolve().parents[1] / "params.yaml"
+    try:
+        with open(path) as f:
+            params = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return defaults
+
+    # Only sections describing a training run. paths/audit/evaluate and the
+    # experiment grids are read by dvc.yaml, and pulling them in here would
+    # collide on shared key names such as `seed` and `batch_size`.
+    for section in ("data", "model", "loss", "train"):
+        for key, value in (params.get(section) or {}).items():
+            defaults[key] = value
+
+    # nargs=3 flag, stored as "2 4 6" so it expands correctly inside a
+    # dvc.yaml cmd string. Convert back to the list argparse would produce.
+    rates = defaults.get("decoder_atrous_rates")
+    if isinstance(rates, str):
+        defaults["decoder_atrous_rates"] = [int(x) for x in rates.split()]
+
+    return defaults
+
+
+def optional_int(value):
+    """Parse an int flag that may arrive as a null placeholder.
+
+    DVC interpolates params.yaml values into command strings, so a YAML `null`
+    reaches argparse as the text "None". type=int rejects that, which would
+    crash every grid arm that leaves the value unset before training starts.
+
+    Args:
+        value: Raw command-line token.
+
+    Returns:
+        An int, or None for an empty/null placeholder.
+    """
+    if value is None or str(value).strip().lower() in ("", "none", "null"):
+        return None
+    return int(value)
+
+
+def str2bool(value):
+    """Parse a boolean flag that must also accept an explicit value.
+
+    A plain store_true flag cannot be templated: `--freeze-encoder ${item.x}`
+    has nowhere to put the value, so a foreach grid can only ever pass the flag
+    or omit it, never vary it per arm. Accepting a value keeps the grid honest
+    while `--freeze-encoder` on its own still works.
+
+    Args:
+        value: Raw command-line token.
+
+    Returns:
+        The parsed boolean.
+
+    Raises:
+        argparse.ArgumentTypeError: If the token is not a recognised boolean.
+    """
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token in ("true", "t", "yes", "y", "1"):
+        return True
+    if token in ("false", "f", "no", "n", "0", "none", "null", ""):
+        return False
+    raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
+
+
 def build_argparser():
-    """Create the CLI argument parser for the training script."""
+    """Create the CLI argument parser for the training script.
+
+    Defaults come from params.yaml where available -- see load_param_defaults().
+    """
+    d = load_param_defaults()
     parser = argparse.ArgumentParser(description="Train the water body segmentation model.")
 
     parser.add_argument("--train-manifest", required=True)
@@ -114,14 +263,14 @@ def build_argparser():
     parser.add_argument("--checkpoint-dir", default="checkpoints")
 
     # Data pipeline
-    parser.add_argument("--window-min", type=int, default=64)
-    parser.add_argument("--window-max", type=int, default=2048)
-    parser.add_argument("--patch-size", type=int, default=256)
-    parser.add_argument("--fg-bias-ratio", type=float, default=0.7)
-    parser.add_argument("--patches-per-epoch", type=int, default=8000)
-    parser.add_argument("--tile-size", type=int, default=384)
-    parser.add_argument("--overlap", type=float, default=0.25)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--window-min", type=int, default=d["window_min"])
+    parser.add_argument("--window-max", type=int, default=d["window_max"])
+    parser.add_argument("--patch-size", type=int, default=d["patch_size"])
+    parser.add_argument("--fg-bias-ratio", type=float, default=d["fg_bias_ratio"])
+    parser.add_argument("--patches-per-epoch", type=int, default=d["patches_per_epoch"])
+    parser.add_argument("--tile-size", type=int, default=d["tile_size"])
+    parser.add_argument("--overlap", type=float, default=d["overlap"])
+    parser.add_argument("--num-workers", type=int, default=d["num_workers"])
 
     # Model
     parser.add_argument(
@@ -130,43 +279,77 @@ def build_argparser():
         help="Architecture family (deeplabv3plus, unet, fpn, ...). Decoder args "
         "the chosen arch does not accept are dropped with a warning.",
     )
-    parser.add_argument("--encoder-name", default="mobilenet_v2")
+    parser.add_argument("--encoder-name", default=d["encoder_name"])
     parser.add_argument(
         "--decoder-channels",
-        type=int,
+        type=optional_int,
         default=None,
         help="Decoder width. Leave unset for smp's default. This is the "
         "capacity lever; --dropout is the regularization lever.",
     )
     parser.add_argument(
         "--freeze-encoder",
-        action="store_true",
+        type=str2bool,
+        nargs="?",
+        const=True,
+        default=False,
         help="Freeze the pretrained encoder (params AND BatchNorm statistics). "
-        "Reduces trainable capacity instead of regularizing it.",
+        "Reduces trainable capacity instead of regularizing it. Takes an optional "
+        "explicit value so a foreach grid can vary it per arm.",
     )
-    parser.add_argument("--encoder-weights", default="imagenet")
+    parser.add_argument("--encoder-weights", default=d["encoder_weights"])
     parser.add_argument(
-        "--decoder-atrous-rates", type=int, nargs=3, default=(2, 4, 6),
+        "--decoder-atrous-rates", type=int, nargs=3, default=d["decoder_atrous_rates"],
         help="Recalibrate if --patch-size changes.",
     )
 
     # Loss
-    parser.add_argument("--bce-weight", type=float, default=0.5)
-    parser.add_argument("--dice-alpha", type=float, default=0.5)
-    parser.add_argument("--dice-beta", type=float, default=0.5)
+    parser.add_argument(
+        "--pixel-loss",
+        default="bce",
+        choices=["bce", "weighted_bce", "focal"],
+        help="Pixel-wise term paired with the Tversky region term.",
+    )
+    parser.add_argument(
+        "--pos-weight",
+        type=float,
+        default=1.0,
+        help="Positive-class multiplier for --pixel-loss weighted_bce. Set to the "
+        "measured background:foreground pixel ratio (see metrics/class_balance.json).",
+    )
+    parser.add_argument("--focal-gamma", type=float, default=2.0)
+    parser.add_argument(
+        "--focal-alpha",
+        type=float,
+        default=0.5,
+        help="Positive-class weight for --pixel-loss focal. 0.5 is neutral; the "
+        "paper's 0.25 down-weights foreground and is wrong for this imbalance.",
+    )
+    parser.add_argument("--bce-weight", type=float, default=d["bce_weight"],
+                        help="Weight on the pixel-wise term; 1 - this goes to Tversky.")
+    parser.add_argument("--dice-alpha", type=float, default=d["dice_alpha"])
+    parser.add_argument("--dice-beta", type=float, default=d["dice_beta"])
 
     # Optimization
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--dropout", type=float, default=0.5, help="ASPP dropout.")
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--early-stopping-patience", type=int, default=6)
-    parser.add_argument("--min-delta", type=float, default=0.001)
-    parser.add_argument("--lr-patience", type=int, default=3, help="ReduceLROnPlateau patience.")
+    parser.add_argument("--lr", type=float, default=d["lr"])
+    parser.add_argument("--weight-decay", type=float, default=d["weight_decay"])
+    parser.add_argument("--dropout", type=float, default=d["dropout"], help="ASPP dropout.")
+    parser.add_argument("--batch-size", type=int, default=d["batch_size"])
+    parser.add_argument(
+        "--accum-steps",
+        type=int,
+        default=1,
+        help="Micro-batches accumulated per optimizer step. Effective batch is "
+        "batch-size * this. Reaches batch sizes the card cannot hold, but leaves "
+        "BatchNorm statistics at the micro-batch size.",
+    )
+    parser.add_argument("--epochs", type=int, default=d["epochs"])
+    parser.add_argument("--early-stopping-patience", type=int, default=d["early_stopping_patience"])
+    parser.add_argument("--min-delta", type=float, default=d["min_delta"])
+    parser.add_argument("--lr-patience", type=int, default=d["lr_patience"], help="ReduceLROnPlateau patience.")
 
     # Tracking
-    parser.add_argument("--experiment-name", default="water_body_segmentation")
+    parser.add_argument("--experiment-name", default=d["experiment_name"])
     parser.add_argument("--run-name", default=None)
     parser.add_argument(
         "--tracking-uri",
@@ -176,7 +359,7 @@ def build_argparser():
         "when running from the repo root or under DVC.",
     )
 
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=d["seed"])
     parser.add_argument("--device", default=None, help="Defaults to cuda if available, else cpu.")
 
     return parser
@@ -214,7 +397,9 @@ def run_training(args, report_callback=None):
     logger.info(
         f"Config: arch={args.arch} encoder={args.encoder_name} weights={args.encoder_weights} "
         f"lr={args.lr} weight_decay={args.weight_decay} dropout={args.dropout} "
-        f"batch_size={args.batch_size} patches_per_epoch={args.patches_per_epoch} "
+        f"batch_size={args.batch_size} accum_steps={args.accum_steps} "
+        f"effective_batch={args.batch_size * args.accum_steps} "
+        f"patches_per_epoch={args.patches_per_epoch} "
         f"epochs={args.epochs} bce_weight={args.bce_weight} "
         f"dice_alpha={args.dice_alpha} dice_beta={args.dice_beta}"
     )
@@ -266,8 +451,14 @@ def run_training(args, report_callback=None):
         + (f", {trainable_params:,} trainable (encoder frozen)" if args.freeze_encoder else "")
     )
 
-    criterion = BCEDiceLoss(
-        bce_weight=args.bce_weight, dice_alpha=args.dice_alpha, dice_beta=args.dice_beta
+    criterion = CombinedLoss(
+        pixel_loss=args.pixel_loss,
+        pixel_weight=args.bce_weight,
+        tversky_alpha=args.dice_alpha,
+        tversky_beta=args.dice_beta,
+        pos_weight=args.pos_weight,
+        focal_gamma=args.focal_gamma,
+        focal_alpha=args.focal_alpha,
     )
     # Filtered, not model.parameters(): a frozen param has no grad, so AdamW
     # would skip it anyway, but passing it in still reports it as being
@@ -295,10 +486,17 @@ def run_training(args, report_callback=None):
             },
             model_config={
                 "arch": args.arch,
+                "pixel_loss": args.pixel_loss,
+                "pos_weight": args.pos_weight,
+                "focal_gamma": args.focal_gamma,
+                "tversky_alpha": args.dice_alpha,
+                "tversky_beta": args.dice_beta,
                 "encoder_name": args.encoder_name,
                 "decoder_channels": args.decoder_channels,
                 "freeze_encoder": args.freeze_encoder,
                 "trainable_params": trainable_params,
+                "accum_steps": args.accum_steps,
+                "effective_batch_size": args.batch_size * args.accum_steps,
                 "encoder_weights": encoder_weights,
                 "decoder_atrous_rates": tuple(args.decoder_atrous_rates),
             },
@@ -325,7 +523,13 @@ def run_training(args, report_callback=None):
             tracker.start_epoch()
 
             train_loss = train_one_epoch(
-                model, train_loader, criterion, optimizer, device, frozen_modules=frozen_modules
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                device,
+                frozen_modules=frozen_modules,
+                accum_steps=args.accum_steps,
             )
             val_summary = validate(model, val_loader, device, criterion=criterion)
             val_iou = val_summary["global"]["iou"]

@@ -26,6 +26,8 @@ paths:
   tune_checkpoint_dir: training/checkpoints_tune             # tune (untracked, transient)
   benchmark_checkpoint_dir: training/checkpoints_benchmark   # benchmark arms
   capacity_checkpoint_dir: training/checkpoints_capacity     # capacity arms
+  loss_checkpoint_dir: training/checkpoints_loss             # loss ablation arms
+  batching_checkpoint_dir: training/checkpoints_batching     # batching arms
   mlflow_db: training/mlflow.db
   study_db: training/optuna_study.db
 
@@ -52,6 +54,12 @@ audit:
   test_frac: 0.15
   n_buckets: 5                    # size buckets for stratification
   seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: sampling_balance
+# ---------------------------------------------------------------------------
+sampling:
+  n_patches: 2000               # per fg_bias_ratio setting
 
 # ---------------------------------------------------------------------------
 # Data loading / sampling (shared by train, tune, evaluate)
@@ -187,6 +195,112 @@ capacity:
       dropout: 0.0
       freeze_encoder: false
       decoder_channels: 128
+      seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: lossablation (frozen -- run on demand)
+#
+# Answers "BCE+Tversky weights never ablated against focal loss or weighted BCE".
+# Every arm keeps the same architecture, data, schedule and seed; only the loss
+# changes.
+#
+# CAVEAT to state when reporting: lr=9.18e-05 was tuned with plain BCE+Dice.
+# Losses differ in gradient scale -- focal suppresses an easy pixel's gradient
+# by ~400x at gamma=2 -- so a fixed lr favours the baseline. This is a harsher
+# version of the same bias in the arch benchmark, because loss scale and lr
+# interact directly.
+#
+# Judge on precision AND recall, not IoU alone: these arms trade FN against FP,
+# and the mechanism shows in the split even when IoU barely moves. Baseline is
+# precision 0.8574 / recall 0.8480.
+# ---------------------------------------------------------------------------
+lossablation:
+  experiment_name: water_body_loss
+  epochs: 30
+  variants:
+    # Current loss: BCE + Dice (Tversky at the degenerate alpha == beta).
+    bce_dice:
+      pixel_loss: bce
+      pixel_weight: 0.5
+      tversky_alpha: 0.5
+      tversky_beta: 0.5
+      pos_weight: 1.0
+      focal_gamma: 2.0
+      seed: 42
+    # The knob already in the code, finally turned. beta > alpha punishes false
+    # negatives -- the recall bias for thin, elongated features. Note the
+    # convention: in this codebase alpha is on FP, opposite to the Tversky paper.
+    bce_tversky_recall:
+      pixel_loss: bce
+      pixel_weight: 0.5
+      tversky_alpha: 0.3
+      tversky_beta: 0.7
+      pos_weight: 1.0
+      focal_gamma: 2.0
+      seed: 42
+    # pos_weight is not a guess: it is the measured background:foreground pixel
+    # ratio of 4.4 from metrics/class_balance.json.
+    weighted_bce_dice:
+      pixel_loss: weighted_bce
+      pixel_weight: 0.5
+      tversky_alpha: 0.5
+      tversky_beta: 0.5
+      pos_weight: 4.4
+      focal_gamma: 2.0
+      seed: 42
+    focal_dice:
+      pixel_loss: focal
+      pixel_weight: 0.5
+      tversky_alpha: 0.5
+      tversky_beta: 0.5
+      pos_weight: 1.0
+      focal_gamma: 2.0
+      seed: 42
+
+# ---------------------------------------------------------------------------
+# Stage: batching (frozen -- run on demand)
+#
+# Answers "batch size 8 accepted as a hardware limit without exploring gradient
+# accumulation". The premise is already measured false: batch 8 reserves 1374 MB
+# of a 4 GB card and batch 16 runs natively at 2708 MB. So the interesting
+# question is not "does accumulation let me exceed 8" but the one these three
+# arms isolate:
+#
+#   batch8            the tuned baseline
+#   batch16_native    real batch 16 -- BN sees 16 samples
+#   batch8_accum2     effective batch 16 -- identical gradients, BN sees 8
+#
+# batch16_native vs batch8_accum2 differ in exactly one thing: the sample count
+# BatchNorm normalises over. Gradients are mathematically identical. If they
+# score the same, accumulation is a free stand-in for a bigger batch on this
+# model; if they diverge, BN batch size is doing the work and accumulation
+# cannot substitute for it.
+#
+# effective_batch32 needs accumulation outright -- ~67 MB fixed + ~152 MB per
+# sample puts native batch 32 near 4.9 GB, past the card.
+#
+# CAVEAT: lr 9.18e-05 was tuned at batch 8. Larger effective batches usually
+# want a larger lr, so the bigger-batch arms are handicapped at fixed lr.
+# ---------------------------------------------------------------------------
+batching:
+  experiment_name: water_body_batching
+  epochs: 30
+  variants:
+    batch8:
+      batch_size: 8
+      accum_steps: 1
+      seed: 42
+    batch16_native:
+      batch_size: 16
+      accum_steps: 1
+      seed: 42
+    batch8_accum2:
+      batch_size: 8
+      accum_steps: 2
+      seed: 42
+    batch8_accum4:
+      batch_size: 8
+      accum_steps: 4
       seed: 42
 
 # ---------------------------------------------------------------------------

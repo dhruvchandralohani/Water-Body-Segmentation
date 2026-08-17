@@ -44,7 +44,11 @@ def suggest_args(trial, base_args):
     """
     trial_args = copy.deepcopy(base_args)
     trial_args.lr = trial.suggest_float("lr", 5e-5, 1.2e-4, log=True)
-    trial_args.batch_size = 8
+    # Inherited from base_args, not pinned here. A hardcoded 8 silently
+    # discarded whatever --batch-size the caller passed, which is how the
+    # earlier batch-size mismatch between train.py and tune.py went unnoticed:
+    # the value that actually ran was neither the CLI's nor train.py's default.
+    trial_args.batch_size = base_args.batch_size
     trial_args.weight_decay = trial.suggest_float("weight_decay", 5e-5, 3e-3, log=True)
     trial_args.dropout = trial.suggest_float("dropout", 0.3, 0.5)
 

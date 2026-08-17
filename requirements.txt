@@ -26,3 +26,4 @@ uvicorn[standard]==0.52.1
 python-multipart==0.0.32
 pydantic==2.13.4
 pyyaml==6.0.3
+dvc==3.63.0
