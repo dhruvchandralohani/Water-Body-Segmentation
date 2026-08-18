@@ -269,7 +269,8 @@ def _extract_function(name):
         The callable.
     """
     import argparse
-    from typing import Any, Callable, cast
+    from collections.abc import Callable
+    from typing import Any, cast
 
     tree = ast.parse((REPO_ROOT / "training" / "train.py").read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
