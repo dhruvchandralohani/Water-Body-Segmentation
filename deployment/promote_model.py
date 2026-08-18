@@ -176,7 +176,7 @@ def promote(run_id, experiment_name, tracking_uri=None, force=False):
 
     # Gate 2: refuse a regression by default. Experimentation routinely produces
     # worse runs; the safe default is to say no and make the operator override.
-    if incumbent_metric is not None and candidate_metric < incumbent_metric and not force:
+    if incumbent_metric is not None and incumbent is not None and candidate_metric < incumbent_metric and not force:
         raise ValueError(
             f"refusing to promote: candidate {GATE_METRIC}={candidate_metric:.4f} is below "
             f"the incumbent's {incumbent_metric:.4f} (version {incumbent.version}). "
