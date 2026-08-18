@@ -110,7 +110,11 @@ jobs:
               def forward(self, x):
                   return self.conv(x)
 
-          mlflow.pytorch.save_model(Tiny(), "deployment/exported_model/best_model")
+          mlflow.pytorch.save_model(
+              Tiny(),
+              "deployment/exported_model/best_model",
+              serialization_format="pickle",
+          )
           PY
 
       - uses: actions/upload-artifact@v4
