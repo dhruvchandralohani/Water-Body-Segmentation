@@ -1,0 +1,172 @@
+name: CI
+
+# Runs on every push and pull request to main. Nothing here needs a GPU or the
+# real dataset -- both are absent on a runner, and a test that needs either is a
+# test that goes slow, then flaky, then ignored.
+#
+# Deliberately NOT here: any assertion about model quality. "IoU > 0.7" is an
+# experiment result, not a code contract, and it already lives versioned per
+# commit in metrics/test_metrics.json. CI checks that the code still does what
+# it claims; the pipeline checks whether the model is any good.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A new push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Seconds. Fails fast on formatting and type errors before anything heavy
+  # installs, so a misplaced import does not cost a full torch download.
+  # --------------------------------------------------------------------------
+  static:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff
+        run: ruff check .
+
+  # --------------------------------------------------------------------------
+  # The main suite. CPU torch only: the CUDA build is several gigabytes and
+  # there is no GPU on a runner to use it with.
+  # --------------------------------------------------------------------------
+  tests:
+    name: unit and config tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install CPU torch
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      # Pyright runs HERE, not in the lint job, because it needs torch and smp
+      # installed to resolve them. Without those every third-party symbol is
+      # unknown, the output drowns in unresolved-import noise, and the check
+      # becomes something you suppress rather than read -- which is how a type
+      # checker stops catching anything. Both real Pylance errors this project
+      # hit (a dict narrowing to dict[str, bool], an nn.Module buffer reading as
+      # Tensor | Module) need resolved types to detect.
+      - name: Pyright
+        run: |
+          pip install pyright
+          pyright
+
+      - name: Fast tests
+        run: python -m pytest -m "not slow" -q
+
+      # Separated so a failure here is legible: the smoke test running the whole
+      # chain end to end is a different kind of signal from a unit test, and
+      # burying it in the same run makes it easy to miss which one broke.
+      - name: Pipeline smoke test
+        run: python -m pytest -m slow -q
+
+      # The docker job needs something serve.py can actually load, and this is
+      # the only job with torch and mlflow installed. A placeholder file will not
+      # do: serve.py loads the model during FastAPI startup, so an unloadable
+      # bundle means uvicorn never comes up and /health never answers.
+      - name: Build a minimal servable bundle
+        run: |
+          python - <<'PY'
+          import mlflow.pytorch
+          import torch.nn as nn
+
+          class Tiny(nn.Module):
+              """One conv, 3->1 channels: the shape contract serve.py expects."""
+              def __init__(self):
+                  super().__init__()
+                  self.conv = nn.Conv2d(3, 1, 3, padding=1)
+
+              def forward(self, x):
+                  return self.conv(x)
+
+          mlflow.pytorch.save_model(Tiny(), "deployment/exported_model/best_model")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: servable-bundle
+          path: deployment/exported_model/best_model
+          retention-days: 1
+
+  # --------------------------------------------------------------------------
+  # Builds the serving image and proves it answers. This is the check that
+  # catches the dependency-drift class of failure directly: an unpinned torch
+  # broke this build once, and nothing in the Python tests would have noticed.
+  # --------------------------------------------------------------------------
+  docker:
+    name: serving image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Depends on `tests` for the bundle, not just for ordering: the exported
+    # model is a DVC output, absent from a fresh clone, and the Dockerfile COPYs
+    # it at build time.
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restored to the exact path three other files agree on -- the artifact_uri
+      # export_model downloads, the Dockerfile COPY, and serve.py's MODEL_PATH
+      # default all say best_model. COPY fails outright if it is missing.
+      - uses: actions/download-artifact@v4
+        with:
+          name: servable-bundle
+          path: deployment/exported_model/best_model
+
+      - name: Build
+        run: docker build -f deployment/Dockerfile -t water-seg:ci .
+
+      - name: Start
+        run: docker run -d --name water-seg -p 8000:8000 water-seg:ci
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/health > /dev/null; then
+              echo "healthy after ${i}s"
+              curl -fsS http://localhost:8000/health
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "service never became healthy"
+          docker logs water-seg
+          exit 1
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs water-seg || true
+
+      - name: Stop
+        if: always()
+        run: docker rm -f water-seg || true

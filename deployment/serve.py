@@ -18,18 +18,20 @@ Environment variables (all optional, sensible defaults for local use):
 """
 
 import base64
-import io
 import os
 import tempfile
 import time
 import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic.warnings import UnsupportedFieldAttributeWarning
 
 warnings.filterwarnings("ignore", category=UnsupportedFieldAttributeWarning)
+
+import sys as _sys
+from pathlib import Path as _Path
 
 import cv2
 import numpy as np
@@ -40,12 +42,10 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import sys as _sys
-from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
-from deployment.inference import load_model, predict_image
 from common.logging_setup import setup_logger
+from deployment.inference import load_model, predict_image
 
 logger = setup_logger("serve", log_file="serve.log")
 
@@ -185,7 +185,9 @@ async def predict(
         )
     except Exception as e:
         logger.info(f"Request failed: filename={file.filename} error={e}")
-        raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
+        # `from e` keeps the original traceback attached, so a failure inside
+        # inference is distinguishable from one raised by the handler itself.
+        raise HTTPException(status_code=500, detail=f"Inference failed: {e}") from e
     finally:
         os.unlink(tmp_path)
 

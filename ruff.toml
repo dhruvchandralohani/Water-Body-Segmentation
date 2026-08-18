@@ -1,0 +1,29 @@
+# Matched to the code that exists rather than to a default. 130 is the current
+# maximum, and reformatting 54 lines to satisfy an arbitrary 88 would be churn
+# with no reader benefit -- the long lines here are argparse help strings and
+# f-string log messages, which read worse when wrapped.
+line-length = 130
+target-version = "py310"
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes -- unused imports, undefined names
+    "I",    # import ordering
+    "B",    # bugbear: mutable default args, loop-variable capture, and similar
+    "UP",   # pyupgrade
+]
+ignore = [
+    "E501",  # line length is enforced by the formatter setting above
+    "B008",  # function call in a default arg: intentional in argparse wiring
+]
+
+[lint.per-file-ignores]
+# Several entry points insert the repo root on sys.path before importing the
+# package, which necessarily puts those imports below executable code.
+"training/*.py" = ["E402"]
+"data_pipeline/*.py" = ["E402"]
+"deployment/*.py" = ["E402"]
+# Tests deliberately import inside functions to keep heavy dependencies out of
+# collection, and reuse fixture names as arguments.
+"tests/*" = ["F811", "E402"]

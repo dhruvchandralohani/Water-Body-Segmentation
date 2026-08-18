@@ -263,11 +263,13 @@ stages:
         --bce-weight ${loss.bce_weight}
         --dice-alpha ${loss.dice_alpha}
         --dice-beta ${loss.dice_beta}
-        --lr ${train.lr}
-        --weight-decay ${train.weight_decay}
-        --dropout ${train.dropout}
+        --lr ${benchmark.lr}
+        --scheduler ${benchmark.scheduler}
+        --warmup-frac ${benchmark.warmup_frac}
+        --weight-decay ${benchmark.weight_decay}
+        --dropout ${benchmark.dropout}
         --batch-size ${train.batch_size}
-        --early-stopping-patience ${train.early_stopping_patience}
+        --early-stopping-patience ${benchmark.early_stopping_patience}
         --min-delta ${train.min_delta}
         --lr-patience ${train.lr_patience}
       deps:

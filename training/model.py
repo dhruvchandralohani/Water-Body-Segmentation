@@ -353,11 +353,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Anything under "dropped" is a setting that variant will not receive.
+    # Mirrors params.yaml:benchmark.variants. Run with --probe-vram before
+    # committing a night to the grid: segformer/mit_b0 is the untested one, and
+    # attention memory does not scale like a CNN's.
     variants = [
         ("deeplabv3plus", "mobilenet_v2", (2, 4, 6)),
-        ("deeplabv3plus", "mobilenet_v2", (12, 24, 36)),
         ("unet", "mobilenet_v2", (2, 4, 6)),
-        ("deeplabv3plus", "resnet34", (2, 4, 6)),
+        ("segformer", "mit_b0", (2, 4, 6)),
     ]
 
     for arch, encoder, rates in variants:

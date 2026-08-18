@@ -43,8 +43,8 @@ stages:
       nfiles: 2841
     - path: data_pipeline/audit.py
       hash: md5
-      md5: f7836f9fee13bb71ab1f55b275cb4c87
-      size: 20832
+      md5: 864b56dee9f1975657bf66399d9bde73
+      size: 21430
     outs:
     - path: data/processed/masks_corrected
       hash: md5
@@ -57,16 +57,16 @@ stages:
       size: 287973
     - path: data_pipeline/splits/test.csv
       hash: md5
-      md5: 58a86b948d7ed048dbd5eb2f68c6a1ee
-      size: 12558
+      md5: 5c1a5c31c38f65232f9e1f4aa7d69491
+      size: 11736
     - path: data_pipeline/splits/train.csv
       hash: md5
-      md5: 838d70d6917f583707153dfcf145e124
-      size: 58385
+      md5: 14691ee6ca45725595c2eb85cc657fd5
+      size: 54597
     - path: data_pipeline/splits/val.csv
       hash: md5
-      md5: 11a39f3ccc2368fc782debc43ffd6f30
-      size: 12552
+      md5: 14a8cf5ee8f95810763609486215d650
+      size: 11730
     - path: metrics/class_balance.json
       hash: md5
       md5: 11eb468ed71038b8bfd8cc8dd607a9f8
@@ -138,12 +138,12 @@ stages:
       size: 9477
     - path: data_pipeline/splits/train.csv
       hash: md5
-      md5: 838d70d6917f583707153dfcf145e124
-      size: 58385
+      md5: 14691ee6ca45725595c2eb85cc657fd5
+      size: 54597
     - path: data_pipeline/splits/val.csv
       hash: md5
-      md5: 11a39f3ccc2368fc782debc43ffd6f30
-      size: 12552
+      md5: 14a8cf5ee8f95810763609486215d650
+      size: 11730
     - path: data_pipeline/tile_dataset.py
       hash: md5
       md5: 7fd146759090f3bc49759f6f2350c3e2
@@ -162,16 +162,16 @@ stages:
       size: 4738
     - path: training/model.py
       hash: md5
-      md5: eac25f68aca12c8b3d92fa452365cbae
-      size: 14962
+      md5: 7a7cb3664209fc96e700462dd6193853
+      size: 15106
     - path: training/tracking.py
       hash: md5
       md5: b05828f3a2f7faec2fca471c94b49f85
       size: 6310
     - path: training/train.py
       hash: md5
-      md5: c96861842c0c58cf4033696e3116f03c
-      size: 23465
+      md5: 12be16797328483344b9a537de334b4c
+      size: 27672
     outs:
     - path: training/checkpoints
       hash: md5
@@ -221,3 +221,212 @@ stages:
       hash: md5
       md5: 76c4b6ce5f1b1aee7b6789d412002a53
       size: 418
+  benchmark@deeplabv3plus_mbv2_recalibrated:
+    cmd: python -m training.train --arch deeplabv3plus --encoder-name 
+      mobilenet_v2 --decoder-atrous-rates 2 4 6 --seed 42 --run-name 
+      deeplabv3plus_mbv2_recalibrated --experiment-name 
+      water_body_arch_benchmark --epochs 15 --checkpoint-dir 
+      training/checkpoints_benchmark/deeplabv3plus_mbv2_recalibrated 
+      --train-manifest data_pipeline/splits/train.csv --val-manifest 
+      data_pipeline/splits/val.csv --image-dir data/raw/images --mask-dir 
+      data/processed/masks_corrected --tracking-uri sqlite:///training/mlflow.db
+      --encoder-weights imagenet --window-min 64 --window-max 2048 --patch-size 
+      256 --fg-bias-ratio 0.7 --patches-per-epoch 8000 --tile-size 384 --overlap
+      0.25 --num-workers 4 --bce-weight 0.5 --dice-alpha 0.5 --dice-beta 0.5 
+      --lr 9.18e-05 --weight-decay 0.00061 --dropout 0.442 --batch-size 8 
+      --early-stopping-patience 10 --min-delta 0.001 --lr-patience 5
+    deps:
+    - path: data/processed/masks_corrected
+      hash: md5
+      md5: 911f59d19a07efcd853963b07454c2a3.dir
+      size: 137694043
+      nfiles: 2698
+    - path: data_pipeline/data.py
+      hash: md5
+      md5: 46f742650675fb7c1a067a209cd9ff20
+      size: 3007
+    - path: data_pipeline/patch_dataset.py
+      hash: md5
+      md5: 07df0885ed8a037fd1a815e79a48743f
+      size: 9477
+    - path: data_pipeline/splits/train.csv
+      hash: md5
+      md5: 838d70d6917f583707153dfcf145e124
+      size: 58385
+    - path: data_pipeline/splits/val.csv
+      hash: md5
+      md5: 11a39f3ccc2368fc782debc43ffd6f30
+      size: 12552
+    - path: data_pipeline/tile_dataset.py
+      hash: md5
+      md5: 7fd146759090f3bc49759f6f2350c3e2
+      size: 5987
+    - path: data_pipeline/transforms.py
+      hash: md5
+      md5: a05d1e334b6ff7da2cefc46d6c619506
+      size: 3715
+    - path: training/loss.py
+      hash: md5
+      md5: 0475224f12ed40d0b3afe8f0124c367a
+      size: 8452
+    - path: training/metrics.py
+      hash: md5
+      md5: 20f4c09043e192371c2914e237a6923f
+      size: 4738
+    - path: training/model.py
+      hash: md5
+      md5: eac25f68aca12c8b3d92fa452365cbae
+      size: 14962
+    - path: training/tracking.py
+      hash: md5
+      md5: b05828f3a2f7faec2fca471c94b49f85
+      size: 6310
+    - path: training/train.py
+      hash: md5
+      md5: c96861842c0c58cf4033696e3116f03c
+      size: 23465
+    outs:
+    - path: training/checkpoints_benchmark/deeplabv3plus_mbv2_recalibrated
+      hash: md5
+      md5: 02db7ef7e677ff28c0d13ae39879693a.dir
+      size: 267013410
+      nfiles: 15
+  benchmark@unet_mbv2:
+    cmd: python -m training.train --arch unet --encoder-name mobilenet_v2 
+      --decoder-atrous-rates 2 4 6 --seed 42 --run-name unet_mbv2 
+      --experiment-name water_body_arch_benchmark --epochs 15 --checkpoint-dir 
+      training/checkpoints_benchmark/unet_mbv2 --train-manifest 
+      data_pipeline/splits/train.csv --val-manifest data_pipeline/splits/val.csv
+      --image-dir data/raw/images --mask-dir data/processed/masks_corrected 
+      --tracking-uri sqlite:///training/mlflow.db --encoder-weights imagenet 
+      --window-min 64 --window-max 2048 --patch-size 256 --fg-bias-ratio 0.7 
+      --patches-per-epoch 8000 --tile-size 384 --overlap 0.25 --num-workers 4 
+      --bce-weight 0.5 --dice-alpha 0.5 --dice-beta 0.5 --lr 9.18e-05 
+      --weight-decay 0.00061 --dropout 0.442 --batch-size 8 
+      --early-stopping-patience 10 --min-delta 0.001 --lr-patience 5
+    deps:
+    - path: data/processed/masks_corrected
+      hash: md5
+      md5: 911f59d19a07efcd853963b07454c2a3.dir
+      size: 137694043
+      nfiles: 2698
+    - path: data_pipeline/data.py
+      hash: md5
+      md5: 46f742650675fb7c1a067a209cd9ff20
+      size: 3007
+    - path: data_pipeline/patch_dataset.py
+      hash: md5
+      md5: 07df0885ed8a037fd1a815e79a48743f
+      size: 9477
+    - path: data_pipeline/splits/train.csv
+      hash: md5
+      md5: 838d70d6917f583707153dfcf145e124
+      size: 58385
+    - path: data_pipeline/splits/val.csv
+      hash: md5
+      md5: 11a39f3ccc2368fc782debc43ffd6f30
+      size: 12552
+    - path: data_pipeline/tile_dataset.py
+      hash: md5
+      md5: 7fd146759090f3bc49759f6f2350c3e2
+      size: 5987
+    - path: data_pipeline/transforms.py
+      hash: md5
+      md5: a05d1e334b6ff7da2cefc46d6c619506
+      size: 3715
+    - path: training/loss.py
+      hash: md5
+      md5: 0475224f12ed40d0b3afe8f0124c367a
+      size: 8452
+    - path: training/metrics.py
+      hash: md5
+      md5: 20f4c09043e192371c2914e237a6923f
+      size: 4738
+    - path: training/model.py
+      hash: md5
+      md5: eac25f68aca12c8b3d92fa452365cbae
+      size: 14962
+    - path: training/tracking.py
+      hash: md5
+      md5: b05828f3a2f7faec2fca471c94b49f85
+      size: 6310
+    - path: training/train.py
+      hash: md5
+      md5: c96861842c0c58cf4033696e3116f03c
+      size: 23465
+    outs:
+    - path: training/checkpoints_benchmark/unet_mbv2
+      hash: md5
+      md5: 9e993f47e7b34b46aea9c97e43d37363.dir
+      size: 401926985
+      nfiles: 15
+  benchmark@deeplabv3plus_mbv2_default_rates:
+    cmd: python -m training.train --arch deeplabv3plus --encoder-name 
+      mobilenet_v2 --decoder-atrous-rates 12 24 36 --seed 42 --run-name 
+      deeplabv3plus_mbv2_default_rates --experiment-name 
+      water_body_arch_benchmark --epochs 15 --checkpoint-dir 
+      training/checkpoints_benchmark/deeplabv3plus_mbv2_default_rates 
+      --train-manifest data_pipeline/splits/train.csv --val-manifest 
+      data_pipeline/splits/val.csv --image-dir data/raw/images --mask-dir 
+      data/processed/masks_corrected --tracking-uri sqlite:///training/mlflow.db
+      --encoder-weights imagenet --window-min 64 --window-max 2048 --patch-size 
+      256 --fg-bias-ratio 0.7 --patches-per-epoch 8000 --tile-size 384 --overlap
+      0.25 --num-workers 4 --bce-weight 0.5 --dice-alpha 0.5 --dice-beta 0.5 
+      --lr 9.18e-05 --weight-decay 0.00061 --dropout 0.442 --batch-size 8 
+      --early-stopping-patience 10 --min-delta 0.001 --lr-patience 5
+    deps:
+    - path: data/processed/masks_corrected
+      hash: md5
+      md5: 911f59d19a07efcd853963b07454c2a3.dir
+      size: 137694043
+      nfiles: 2698
+    - path: data_pipeline/data.py
+      hash: md5
+      md5: 46f742650675fb7c1a067a209cd9ff20
+      size: 3007
+    - path: data_pipeline/patch_dataset.py
+      hash: md5
+      md5: 07df0885ed8a037fd1a815e79a48743f
+      size: 9477
+    - path: data_pipeline/splits/train.csv
+      hash: md5
+      md5: 838d70d6917f583707153dfcf145e124
+      size: 58385
+    - path: data_pipeline/splits/val.csv
+      hash: md5
+      md5: 11a39f3ccc2368fc782debc43ffd6f30
+      size: 12552
+    - path: data_pipeline/tile_dataset.py
+      hash: md5
+      md5: 7fd146759090f3bc49759f6f2350c3e2
+      size: 5987
+    - path: data_pipeline/transforms.py
+      hash: md5
+      md5: a05d1e334b6ff7da2cefc46d6c619506
+      size: 3715
+    - path: training/loss.py
+      hash: md5
+      md5: 0475224f12ed40d0b3afe8f0124c367a
+      size: 8452
+    - path: training/metrics.py
+      hash: md5
+      md5: 20f4c09043e192371c2914e237a6923f
+      size: 4738
+    - path: training/model.py
+      hash: md5
+      md5: eac25f68aca12c8b3d92fa452365cbae
+      size: 14962
+    - path: training/tracking.py
+      hash: md5
+      md5: b05828f3a2f7faec2fca471c94b49f85
+      size: 6310
+    - path: training/train.py
+      hash: md5
+      md5: c96861842c0c58cf4033696e3116f03c
+      size: 23465
+    outs:
+    - path: training/checkpoints_benchmark/deeplabv3plus_mbv2_default_rates
+      hash: md5
+      md5: 0bd433194f7622b3e78e486d64a38c49.dir
+      size: 267013410
+      nfiles: 15

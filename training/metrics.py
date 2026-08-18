@@ -59,7 +59,10 @@ class SegmentationMetrics:
                 int(fn[i].sum()),
                 int(tn[i].sum()),
             )
-            for key, val in zip(("tp", "fp", "fn", "tn"), counts):
+            # strict=True documents that these two are the same fixed length;
+            # if the counts tuple ever gains a term, this raises instead of
+            # dropping it silently.
+            for key, val in zip(("tp", "fp", "fn", "tn"), counts, strict=True):
                 self._global[key] += val
                 self._per_image[filename][key] += val
 

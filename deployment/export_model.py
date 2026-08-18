@@ -17,17 +17,16 @@ Usage:
 
 import argparse
 import shutil
-from pathlib import Path
-
 import sys as _sys
+from pathlib import Path
 from pathlib import Path as _Path
-_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
-from common.logging_setup import setup_logger
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import mlflow
 from mlflow.artifacts import download_artifacts
 
+from common.logging_setup import setup_logger
 from common.mlflow_utils import find_best_run
 
 logger = setup_logger("export_model", log_file="export.log")

@@ -18,12 +18,12 @@ Usage:
 """
 
 import copy
+import sys as _sys
+from pathlib import Path as _Path
 
 import optuna
 import torch
 
-import sys as _sys
-from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from common.logging_setup import log_run_separator, setup_logger
@@ -74,7 +74,9 @@ def make_objective(base_args):
             trial.report(val_iou, epoch)
             if trial.should_prune():
                 logger.info(f"Trial {trial.number} pruned at epoch {epoch} (val_iou={val_iou:.4f})")
-                raise optuna.TrialPruned()
+                # `from None`: OOM is the expected outcome being handled, not an
+            # error in the handler, so the CUDA traceback is noise in the log.
+            raise optuna.TrialPruned() from None
 
         try:
             val_iou = run_training(trial_args, report_callback=report_callback)
@@ -84,7 +86,9 @@ def make_objective(base_args):
                 f"-- pruning this trial, freeing GPU memory, continuing search."
             )
             torch.cuda.empty_cache()
-            raise optuna.TrialPruned()
+            # `from None`: OOM is the expected outcome being handled, not an
+            # error in the handler, so the CUDA traceback is noise in the log.
+            raise optuna.TrialPruned() from None
 
         logger.info(f"Trial {trial.number} finished: val_iou={val_iou:.4f}")
         return val_iou

@@ -27,26 +27,25 @@ Usage:
 """
 
 import argparse
-import time
+import math
+import sys as _sys
 from pathlib import Path
-
-import yaml
+from pathlib import Path as _Path
 
 import torch
+import yaml
 
-import sys as _sys
-from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
-from data_pipeline.data import get_eval_loader, get_train_loader
 from common.logging_setup import log_run_separator, setup_logger
+from data_pipeline.data import get_eval_loader, get_train_loader
 from training.loss import CombinedLoss
 from training.metrics import SegmentationMetrics
 from training.model import build_model, freeze_encoder
 from training.tracking import ExperimentTracker
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=(), accum_steps=1):
+def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=(), accum_steps=1, step_scheduler=None):
     """Train the model for one epoch over the provided training loader.
 
     Args:
@@ -68,6 +67,10 @@ def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=
             training suffers from noisy BN statistics, accumulation does not fix
             it -- only a larger real batch, or a batch-independent norm such as
             GroupNorm, does.
+        step_scheduler: Optional per-step LR schedule, advanced once per
+            optimizer step rather than once per epoch. Warmup needs that
+            granularity: at 1000 steps an epoch, an epoch-stepped schedule
+            cannot warm up over the few hundred steps that matter.
 
     Returns:
         The mean training loss across the epoch.
@@ -97,6 +100,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=
         if pending == accum_steps:
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+            if step_scheduler is not None:
+                step_scheduler.step()
             pending = 0
 
     # Flush a trailing partial group; otherwise its gradients are computed and
@@ -106,6 +111,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, frozen_modules=
     if pending:
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        if step_scheduler is not None:
+            step_scheduler.step()
 
     return sum(losses) / len(losses)
 
@@ -248,6 +255,58 @@ def str2bool(value):
     raise argparse.ArgumentTypeError(f"expected a boolean value, got {value!r}")
 
 
+def build_lr_schedule(optimizer, kind, total_steps, warmup_frac, lr_patience):
+    """Build the LR schedule and report how often it should be stepped.
+
+    Two options, because they suit different jobs:
+
+    plateau  ReduceLROnPlateau on val_iou, stepped once per epoch. Fine for a
+             single CNN run, but it reacts to a validation signal that swings
+             0.46-0.70 here, so it can drop the rate on noise.
+    cosine   Linear warmup into cosine decay, stepped every optimizer step.
+             Warmup is not optional for a transformer: a LayerNorm model taking
+             full-size updates from step 0 is a known instability, and without
+             it an architecture comparison partly measures which family
+             tolerates its absence. Being schedule-driven rather than
+             metric-driven also makes it immune to a noisy val_iou.
+
+    Args:
+        optimizer: Optimizer whose learning rate is scheduled.
+        kind: "plateau" or "cosine".
+        total_steps: Total optimizer steps across the whole run. Cosine needs
+            this up front, which is why early stopping is disabled during a
+            fixed-budget grid.
+        warmup_frac: Fraction of total_steps spent warming up linearly.
+        lr_patience: Patience for the plateau scheduler.
+
+    Returns:
+        A tuple of the scheduler and the string "epoch" or "step", saying when
+        the caller should step it.
+
+    Raises:
+        ValueError: If kind is unrecognised.
+    """
+    if kind == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="max", patience=lr_patience, factor=0.5
+        )
+        return scheduler, "epoch"
+
+    if kind != "cosine":
+        raise ValueError(f"unknown scheduler {kind!r}; expected 'plateau' or 'cosine'")
+
+    warmup_steps = max(1, int(round(total_steps * warmup_frac)))
+
+    def lr_factor(step):
+        """Multiplier on the base LR at a given optimizer step."""
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor), "step"
+
+
 def build_argparser():
     """Create the CLI argument parser for the training script.
 
@@ -347,6 +406,20 @@ def build_argparser():
     parser.add_argument("--early-stopping-patience", type=int, default=d["early_stopping_patience"])
     parser.add_argument("--min-delta", type=float, default=d["min_delta"])
     parser.add_argument("--lr-patience", type=int, default=d["lr_patience"], help="ReduceLROnPlateau patience.")
+    parser.add_argument(
+        "--scheduler",
+        default="plateau",
+        choices=["plateau", "cosine"],
+        help="LR schedule. 'plateau' (default) preserves existing behaviour. "
+        "'cosine' is linear warmup into cosine decay, stepped per optimizer step "
+        "-- required for stable transformer training and immune to a noisy val_iou.",
+    )
+    parser.add_argument(
+        "--warmup-frac",
+        type=float,
+        default=0.05,
+        help="Fraction of total optimizer steps spent warming up. Cosine only.",
+    )
 
     # Tracking
     parser.add_argument("--experiment-name", default=d["experiment_name"])
@@ -466,9 +539,19 @@ def run_training(args, report_callback=None):
     optimizer = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad), lr=args.lr, weight_decay=args.weight_decay
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", patience=args.lr_patience, factor=0.5
+    # Optimizer steps, not batches: accumulation means several batches per step,
+    # and cosine has to know the full horizon in advance.
+    steps_per_epoch = math.ceil(len(train_loader) / args.accum_steps)
+    total_steps = steps_per_epoch * args.epochs
+    scheduler, schedule_unit = build_lr_schedule(
+        optimizer, args.scheduler, total_steps, args.warmup_frac, args.lr_patience
     )
+    if schedule_unit == "step":
+        warmup_steps = max(1, int(round(total_steps * args.warmup_frac)))
+        logger.info(
+            f"Schedule: cosine, {total_steps} optimizer steps "
+            f"({steps_per_epoch}/epoch), {warmup_steps} warmup"
+        )
 
     with ExperimentTracker(
         experiment_name=args.experiment_name,
@@ -496,6 +579,8 @@ def run_training(args, report_callback=None):
                 "freeze_encoder": args.freeze_encoder,
                 "trainable_params": trainable_params,
                 "accum_steps": args.accum_steps,
+                "scheduler": args.scheduler,
+                "warmup_frac": args.warmup_frac if args.scheduler == "cosine" else None,
                 "effective_batch_size": args.batch_size * args.accum_steps,
                 "encoder_weights": encoder_weights,
                 "decoder_atrous_rates": tuple(args.decoder_atrous_rates),
@@ -530,11 +615,15 @@ def run_training(args, report_callback=None):
                 device,
                 frozen_modules=frozen_modules,
                 accum_steps=args.accum_steps,
+                step_scheduler=scheduler if schedule_unit == "step" else None,
             )
             val_summary = validate(model, val_loader, device, criterion=criterion)
             val_iou = val_summary["global"]["iou"]
 
-            scheduler.step(val_iou)
+            # A per-step schedule has already advanced inside the epoch; only
+            # the plateau scheduler consumes a metric here.
+            if schedule_unit == "epoch":
+                scheduler.step(val_iou)
             current_lr = optimizer.param_groups[0]["lr"]
 
             tracker.log_epoch(epoch, train_loss, val_summary, current_lr)

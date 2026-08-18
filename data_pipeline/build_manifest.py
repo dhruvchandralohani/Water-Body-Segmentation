@@ -16,6 +16,10 @@ from pathlib import Path
 import pandas as pd
 from PIL import Image
 
+# The source dataset ships JPEGs. Kept explicit so a directory in another
+# format fails loudly rather than producing an empty manifest.
+IMAGE_SUFFIXES = (".jpg", ".jpeg")
+
 
 def build_manifest(image_dir):
     """Build a manifest of image filenames and dimensions from a directory.
@@ -27,12 +31,33 @@ def build_manifest(image_dir):
         A pandas DataFrame with filename, width, and height columns.
     """
     image_dir = Path(image_dir)
+    if not image_dir.is_dir():
+        raise FileNotFoundError(f"image directory does not exist: {image_dir}")
+
     rows = []
+    skipped = 0
     for file_path in sorted(image_dir.iterdir()):
-        if file_path.suffix.lower() in (".jpg", ".jpeg"):
+        if not file_path.is_file():
+            continue
+        if file_path.suffix.lower() in IMAGE_SUFFIXES:
             with Image.open(file_path) as img:
                 width, height = img.size
             rows.append({"filename": file_path.name, "width": width, "height": height})
+        else:
+            skipped += 1
+
+    # Finding nothing must be an error, not an empty CSV. Writing one and
+    # exiting 0 pushes the failure downstream, where it surfaces as pandas
+    # reporting "No columns to parse from file" out of the audit stage -- a
+    # message that says nothing about the actual cause. The most likely cause is
+    # exactly what the message below names: images in a format this does not
+    # scan.
+    if not rows:
+        raise ValueError(
+            f"no images with suffix {sorted(IMAGE_SUFFIXES)} found in {image_dir} "
+            f"({skipped} other files were skipped)"
+        )
+
     return pd.DataFrame(rows)
 
 

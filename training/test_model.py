@@ -15,29 +15,27 @@ Usage:
 
 import argparse
 import json
+import sys as _sys
 from pathlib import Path
+from pathlib import Path as _Path
 
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 
-import sys as _sys
-from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
-
-from common.logging_setup import log_run_separator, setup_logger
 
 import mlflow
 from mlflow.pytorch import load_model as load_pytorch_model
 
-from data_pipeline.data import get_eval_loader
-from training.metrics import evaluate
+from common.logging_setup import log_run_separator, setup_logger
 from common.mlflow_utils import find_best_run
+from data_pipeline.data import get_eval_loader
 from data_pipeline.stitch import PredictionStitcher
 from data_pipeline.tile_dataset import TileDataset
 from data_pipeline.transforms import get_eval_transform
+from training.metrics import evaluate
 
 logger = setup_logger("test_model", log_file="testing.log")
 

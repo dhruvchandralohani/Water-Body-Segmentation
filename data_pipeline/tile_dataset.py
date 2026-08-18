@@ -16,7 +16,6 @@ since it was built for evaluation against known masks.
 from pathlib import Path
 
 import cv2
-import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 
@@ -89,7 +88,10 @@ class TileDataset(Dataset):
     def _build_tile_index(self):
         """Build the internal index of image tiles for deterministic evaluation."""
         index = []
-        for img_idx, (w, h) in enumerate(zip(self.widths, self.heights)):
+        # strict=True: widths and heights come from the same manifest, so a
+        # length mismatch means the manifest is malformed -- better to raise
+        # than to silently index only part of the evaluation set.
+        for img_idx, (w, h) in enumerate(zip(self.widths, self.heights, strict=True)):
             for x0, y0, eff_tile in compute_tile_positions(int(w), int(h), self.tile_size, self.overlap):
                 index.append((img_idx, x0, y0, eff_tile))
         return index

@@ -425,7 +425,7 @@ def main():
     parser.add_argument("--near-black-exclude-thresh", type=float, default=0.7)
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
-    parser.add_argument("--n-buckets", type=int, default=5)
+    parser.add_argument("--n-buckets", type=int, default=5, help="Quantile buckets over min(width, height).")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -501,6 +501,13 @@ def main():
     train_df, val_df, test_df = split_dataset(
         kept_df, val_frac=args.val_frac, test_frac=args.test_frac, random_state=args.seed
     )
+    # size_bucket exists only to stratify the split. Writing it into the split
+    # CSVs leaks an artefact of the splitting procedure into the manifests the
+    # datasets consume -- harmless today because they read filename/width/height
+    # and ignore the rest, but it is unintended output either way.
+    helper_cols = [c for c in ("corrected_coverage", "size_bucket", "coverage_bucket", "stratum")
+                   if c in train_df.columns]
+    train_df, val_df, test_df = (d.drop(columns=helper_cols) for d in (train_df, val_df, test_df))
     save_splits(train_df, val_df, test_df, args.output_dir)
     print(f"\nTrain: {len(train_df)}  Val: {len(val_df)}  Test: {len(test_df)}")
 

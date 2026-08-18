@@ -20,6 +20,26 @@ from data_pipeline.tile_dataset import compute_tile_positions
 from data_pipeline.transforms import get_eval_transform
 
 
+def as_model_uri(model_path):
+    """Render a local model directory as something MLflow will accept.
+
+    MLflow parses its argument as a URI and dispatches on the scheme. On Windows
+    an absolute path like C:\\models\\exported reads "c" as the scheme, which is
+    not a registered artifact repository, and the loader fails with a message
+    about repository registration rather than about the path. A relative path
+    has an empty scheme and works, which is why this only bites outside the
+    container -- inside it the path is /app/exported_model.
+
+    Args:
+        model_path: Local filesystem path to the exported model directory.
+
+    Returns:
+        A file:// URI for absolute paths, or the path unchanged if relative.
+    """
+    path = Path(model_path)
+    return path.resolve().as_uri() if path.is_absolute() else str(path)
+
+
 def load_model(model_path, device):
     """Load a PyTorch model from an exported local model bundle.
 
@@ -30,7 +50,7 @@ def load_model(model_path, device):
     Returns:
         The loaded model moved to the requested device and switched to eval mode.
     """
-    model = load_pytorch_model(str(model_path), map_location=device)
+    model = load_pytorch_model(as_model_uri(model_path), map_location=device)
     model.to(device)
     model.eval()
     return model

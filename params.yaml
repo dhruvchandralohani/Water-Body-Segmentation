@@ -98,6 +98,8 @@ loss:
 # ---------------------------------------------------------------------------
 train:
   experiment_name: water_body_segmentation
+  # Study 2 / Trial 8 -- the config behind the production model. The benchmark
+  # grid deliberately does NOT use these; see benchmark.* below.
   lr: 9.18e-05
   weight_decay: 6.10e-04
   dropout: 0.442
@@ -132,29 +134,48 @@ tune:
 # ---------------------------------------------------------------------------
 benchmark:
   experiment_name: water_body_arch_benchmark
-  epochs: 15                      # same per-variant budget as the Study 2 search
+  epochs: 20                      # arms were still improving at epoch 14 of 15
+
+  # Hyperparameters scoped to this grid, not shared with train.*. Neutral,
+  # literature-standard values rather than the Optuna result, which was tuned on
+  # DeepLabV3+/MobileNetV2 and would hand that arm a home-field advantage. The
+  # price is that no arm sits at its own optimum -- the correct trade for a
+  # comparison, and worth stating when reporting it. Keeping them separate also
+  # means retuning the grid never invalidates the production train stage.
+  lr: 2.0e-04                     # standard AdamW segmentation fine-tuning range
+  weight_decay: 0.01              # AdamW canonical; also the SegFormer paper's value
+  # 0.0, not 0.442: decoder_aspp_dropout exists only on DeepLabV3+, so any
+  # non-zero value regularizes one arm and not the other two.
+  dropout: 0.0
+  # Equal to the epoch budget so it never fires: a fixed-budget comparison needs
+  # every arm to get the same number of epochs. Each still reports its best
+  # checkpoint, so nothing overfit is selected. Cosine also needs the full
+  # horizon known in advance, which early stopping would cut short.
+  early_stopping_patience: 20
+  scheduler: cosine               # warmup + cosine; see build_lr_schedule()
+  warmup_frac: 0.05               # 1000 of 20000 steps = one epoch of warmup
   variants:
-    # The current production model.
-    deeplabv3plus_mbv2_recalibrated:
+    # Three architecture FAMILIES, encoder and decoder taken as a unit. The
+    # encoder cannot be held constant across all three: a MobileNetV2 encoder
+    # inside Segformer would not be a transformer, which is the thing being
+    # compared. Report parameter counts alongside the scores.
+    deeplabv3plus_mbv2:
       arch: deeplabv3plus
       encoder_name: mobilenet_v2
       decoder_atrous_rates: "2 4 6"
       seed: 42
-    # Encoder held constant, rates reverted to smp defaults. Isolates the ASPP
-    # recalibration claim -- the one factor that changes.
-    deeplabv3plus_mbv2_default_rates:
-      arch: deeplabv3plus
-      encoder_name: mobilenet_v2
-      decoder_atrous_rates: "12 24 36"
-      seed: 42
-    # The actual second architecture: full-resolution skip connections instead
-    # of ASPP, chosen against the thin-feature failure mode. Note that U-Net has
-    # no ASPP dropout knob, so it runs without that regularization -- an
-    # asymmetry model.py warns about at build time.
     unet_mbv2:
       arch: unet
       encoder_name: mobilenet_v2
       decoder_atrous_rates: "2 4 6"   # dropped by unet; kept so the grid is uniform
+      seed: 42
+    # mit_b0 is load-bearing: smp's Segformer defaults to a resnet34 encoder,
+    # which would give a SegFormer-style MLP decoder on a CNN -- not a
+    # transformer at all.
+    segformer_mitb0:
+      arch: segformer
+      encoder_name: mit_b0
+      decoder_atrous_rates: "2 4 6"   # dropped by segformer
       seed: 42
 
 # ---------------------------------------------------------------------------
