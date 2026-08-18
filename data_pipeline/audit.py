@@ -441,7 +441,7 @@ def main():
 
     # Explicit columns: with no size exclusions the list is empty, and a
     # column-less DataFrame would break the reason tally further down.
-    report_df = pd.DataFrame(size_excluded, columns=pd.Index(["filename", "excluded", "reason"]))
+    report_df = pd.DataFrame(size_excluded, columns=["filename", "excluded", "reason"])  # type: ignore[call-overload]
     report_df["excluded"] = report_df["excluded"].astype(bool)
 
     # Pass 2: all-foreground masks, before correction can disguise them.
