@@ -505,16 +505,21 @@ stages:
           cache: false
 
   # -------------------------------------------------------------------------
-  # 6. Freeze the winning run into the standalone folder the Dockerfile COPYs
+  # 6. Freeze the PROMOTED run into the standalone folder the Dockerfile COPYs.
+  #    Resolves @production rather than searching for the best run, so the
+  #    artifact that ships is the one someone chose. Fails until a version is
+  #    promoted -- see deployment/promote_model.py.
   # -------------------------------------------------------------------------
   export:
     cmd: >-
       python -m deployment.export_model
+      --from-alias
       --tracking-uri sqlite:///${paths.mlflow_db}
       --experiment-name ${train.experiment_name}
       --output-dir ${paths.exported_model_dir}
     deps:
       - deployment/export_model.py
+      - deployment/promote_model.py
       - common/mlflow_utils.py
       - ${paths.checkpoint_dir}
     outs:

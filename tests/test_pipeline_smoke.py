@@ -337,6 +337,11 @@ def test_model_path_is_rendered_as_a_uri_mlflow_accepts(tmp_path, relative):
         result = as_model_uri("deployment/exported_model")
         assert not result.startswith("file://")
         assert Path(result) == Path("deployment/exported_model")
+        # Forward slashes specifically. MLflow's validate_path_is_safe rejects
+        # any path containing a backslash, so str(Path(...)) -- which renders
+        # this as "deployment\\exported_model" on Windows -- breaks the default
+        # MODEL_PATH. Path equality above passes either way and hid it.
+        assert "\\" not in result, f"backslash in relative model path: {result!r}"
     else:
         uri = as_model_uri(tmp_path)
         assert uri.startswith("file://"), uri

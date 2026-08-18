@@ -45,6 +45,7 @@ from pydantic import BaseModel
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from common.logging_setup import setup_logger
+from deployment import prediction_log
 from deployment.inference import load_model, predict_image
 
 logger = setup_logger("serve", log_file="serve.log")
@@ -58,6 +59,13 @@ THRESHOLD = float(os.environ.get("THRESHOLD", 0.5))
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 8))
 USE_FP16 = os.environ.get("USE_FP16", "false").lower() == "true"
 STATIC_DIR = _Path(__file__).resolve().parent / "static"
+PREDICTION_LOG = prediction_log.default_log_path()
+# The training-time water fraction served predictions are compared against.
+# Read once at import: it is a property of the model that shipped, and a value
+# that changed under a running service would make the comparison meaningless.
+CLASS_BALANCE_PATH = os.environ.get(
+    "CLASS_BALANCE_PATH", str(_Path(__file__).resolve().parent.parent / "metrics" / "class_balance.json")
+)
 
 model_state: dict[str, Any] = {"model": None, "device": None, "model_name": "water-body-segmentation", "model_version": "unknown"}
 
@@ -125,6 +133,22 @@ class HealthResponse(BaseModel):
     overlap: float
     patch_size: int
     threshold: float
+
+
+@app.get("/drift")
+async def drift():
+    """Compare recently served predictions against the training-time reference.
+
+    Deliberately reports a signed delta rather than a verdict. What counts as
+    drift depends on deployment context, so inventing a threshold here would be
+    inventing the answer -- this exposes the comparison and leaves the judgement
+    to whoever reads it.
+    """
+    reference = prediction_log.reference_water_fraction(CLASS_BALANCE_PATH)
+    summary = prediction_log.summarize_log(PREDICTION_LOG, reference=reference)
+    if summary is None:
+        return {"status": "no predictions logged yet", "reference_water_fraction": reference}
+    return {"status": "ok", **summary}
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -210,6 +234,16 @@ async def predict(
         f"size={info['width']}x{info['height']} tiles={info['num_tiles']} "
         f"water_coverage={info['water_coverage_pct']:.2f}% "
         f"total_time={info['timings']['total']:.3f}s"
+    )
+
+    # Summary statistics only -- no image data, nothing reconstructable. Failure
+    # is swallowed inside append(): a full disk is not a reason to fail a
+    # prediction that already succeeded.
+    prediction_log.append(
+        prediction_log.summarize_request(
+            original_bgr, mask, info["timings"]["total"], filename=file.filename
+        ),
+        PREDICTION_LOG,
     )
 
     if format == "png":

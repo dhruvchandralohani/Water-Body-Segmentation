@@ -30,14 +30,20 @@ def as_model_uri(model_path):
     has an empty scheme and works, which is why this only bites outside the
     container -- inside it the path is /app/exported_model.
 
+    Relative paths are returned with forward slashes, NOT via str(Path(...)).
+    On Windows that renders "exported_model/best_model" as
+    "exported_model\\best_model", and MLflow's validate_path_is_safe rejects any
+    path containing a backslash -- so normalising separators the obvious way
+    breaks the default MODEL_PATH on the platform it was meant to help.
+
     Args:
         model_path: Local filesystem path to the exported model directory.
 
     Returns:
-        A file:// URI for absolute paths, or the path unchanged if relative.
+        A file:// URI for absolute paths, or a forward-slashed relative path.
     """
     path = Path(model_path)
-    return path.resolve().as_uri() if path.is_absolute() else str(path)
+    return path.resolve().as_uri() if path.is_absolute() else path.as_posix()
 
 
 def load_model(model_path, device):

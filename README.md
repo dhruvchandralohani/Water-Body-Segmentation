@@ -92,6 +92,12 @@ done", not "skip this": a frozen stage that has never run fails with
 and `training/train.py` reads the same file for its argparse defaults, so a
 hand-run cannot silently diverge from a pipeline run.
 
+There is deliberately **no DVC remote**. The source dataset is public and every
+downstream artifact is regenerable by `dvc repro`, so a remote would mostly be
+ceremony -- `dvc.lock` still records content hashes, so a change to the raw data
+still invalidates the pipeline. `dvc add` pins the dataset version in git; the
+bytes are re-obtainable from the original source.
+
 Two things live outside DVC's output tracking on purpose:
 
 - `training/mlflow.db` and `mlruns/` -- DVC deletes a stage's outputs before
@@ -106,8 +112,37 @@ docker build -f deployment/Dockerfile -t water-seg .
 docker run -p 8000:8000 water-seg
 ```
 
-`GET /` serves the UI, `GET /health` reports model metadata, `POST /predict`
-accepts an image and returns a mask (`?format=png` for a rendered overlay).
+`GET /` serves the UI, `GET /health` reports model metadata including which
+model version is live, `POST /predict` accepts an image and returns a mask
+(`?format=png` for raw PNG bytes instead of the base64 wrapper), and
+`GET /drift` compares recently served predictions against the training-time
+water fraction in `metrics/class_balance.json`.
+
+Every served prediction appends one line to `logs/predictions.jsonl`: input
+dimensions, mean intensity, predicted water fraction, and duration. Summary
+statistics only -- no image data, nothing reconstructable. A sustained gap
+between the predicted water fraction and the training reference is the drift
+signal; `/drift` reports it as a signed delta rather than a verdict, since what
+counts as drift depends on deployment context.
+
+### Promotion
+
+`export_model.py --from-alias` resolves the version aliased `@production`
+rather than searching for the best run, so what ships is what someone chose:
+
+```bash
+python -m deployment.promote_model --show   # what is live
+python -m deployment.promote_model --best   # promote the best evaluated run
+```
+
+Two gates. A run with no `test_iou` cannot be promoted -- `val_iou` is the
+signal used to *select* a model, so an unevaluated run has been chosen but never
+scored on held-out data. And a candidate below the incumbent is refused without
+`--force`, which exists because rollback is a legitimate reason to promote a
+lower-scoring version.
+
+The image still bakes in a fixed bundle, so a registry outage cannot stop the
+service starting.
 
 ## Housekeeping
 

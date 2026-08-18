@@ -11,8 +11,8 @@ stages:
       nfiles: 2841
     - path: data_pipeline/build_manifest.py
       hash: md5
-      md5: 188f49158ebe80f9e54e6504e4ee2da2
-      size: 1814
+      md5: 5e6f0a60e4c0d313ae06bdbf4ac2b37d
+      size: 2794
     outs:
     - path: data/interim/manifest.csv
       hash: md5
@@ -43,8 +43,8 @@ stages:
       nfiles: 2841
     - path: data_pipeline/audit.py
       hash: md5
-      md5: 864b56dee9f1975657bf66399d9bde73
-      size: 21430
+      md5: 1ec6294bef18b26585d88cac0ccbbf3b
+      size: 21468
     outs:
     - path: data/processed/masks_corrected
       hash: md5

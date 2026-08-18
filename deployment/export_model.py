@@ -28,6 +28,7 @@ from mlflow.artifacts import download_artifacts
 
 from common.logging_setup import setup_logger
 from common.mlflow_utils import find_best_run
+from deployment.promote_model import PRODUCTION_ALIAS, current_production, registered_model_name
 
 logger = setup_logger("export_model", log_file="export.log")
 
@@ -36,7 +37,13 @@ _DEFAULT_TRACKING_URI = f"sqlite:///{(_Path(__file__).resolve().parent.parent / 
 _DEFAULT_OUTPUT_DIR = str(_Path(__file__).resolve().parent / "exported_model")
 
 
-def export_model(output_dir, run_id=None, experiment_name="water_body_segmentation", tracking_uri=None):
+def export_model(
+    output_dir,
+    run_id=None,
+    experiment_name="water_body_segmentation",
+    tracking_uri=None,
+    from_alias=False,
+):
     """Export the best or specified MLflow model artifact to a local directory.
 
     Args:
@@ -47,6 +54,8 @@ def export_model(output_dir, run_id=None, experiment_name="water_body_segmentati
             provided.
         tracking_uri: MLflow tracking URI to use. Defaults to the project's local
             SQLite tracking database.
+        from_alias: Resolve the promoted @production version instead of searching
+            for the best run. Overrides run_id.
 
     Returns:
         A tuple containing the local export path and the MLflow run ID used.
@@ -54,7 +63,24 @@ def export_model(output_dir, run_id=None, experiment_name="water_body_segmentati
     tracking_uri = tracking_uri or _DEFAULT_TRACKING_URI
     mlflow.set_tracking_uri(tracking_uri)
 
-    if run_id is None:
+    if from_alias:
+        # The deliberate path. Resolving an alias rather than searching means the
+        # artifact that ships is the one someone promoted, not whatever happens
+        # to lead the metric table at export time. Failing loudly when nothing is
+        # promoted is the intended behaviour: there is no defensible artifact to
+        # build before that decision has been made.
+        from mlflow.tracking import MlflowClient
+
+        model_name = registered_model_name(experiment_name)
+        incumbent = current_production(MlflowClient(), model_name)
+        if incumbent is None:
+            raise ValueError(
+                f"nothing is aliased to @{PRODUCTION_ALIAS} for '{model_name}'. "
+                "Promote a version first: python -m deployment.promote_model --best"
+            )
+        run_id = incumbent.run_id
+        logger.info(f"Exporting @{PRODUCTION_ALIAS} -> version {incumbent.version} (run {run_id})")
+    elif run_id is None:
         run_id, val_iou = find_best_run(experiment_name, tracking_uri)
         msg = f"Best run found: {run_id}"
         if val_iou is not None:
@@ -88,6 +114,13 @@ def main():
         "export somewhere else.",
     )
     parser.add_argument("--run-id", default=None, help="Skip auto-search and export this specific run instead.")
+    parser.add_argument(
+        "--from-alias",
+        action="store_true",
+        help=f"Export the version aliased @{PRODUCTION_ALIAS} rather than searching "
+        "for the best run. Fails if nothing is promoted, which is the point: a "
+        "deployment artifact should not exist before the decision to deploy does.",
+    )
     parser.add_argument("--experiment-name", default="water_body_segmentation")
     parser.add_argument(
         "--tracking-uri",
@@ -99,7 +132,7 @@ def main():
     args = parser.parse_args()
 
     output_dir = args.output_dir or _DEFAULT_OUTPUT_DIR
-    export_model(output_dir, args.run_id, args.experiment_name, args.tracking_uri)
+    export_model(output_dir, args.run_id, args.experiment_name, args.tracking_uri, args.from_alias)
 
 
 if __name__ == "__main__":
