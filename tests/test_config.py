@@ -97,10 +97,14 @@ def test_foreach_arms_define_exactly_the_keys_their_command_uses(dvc_pipeline, p
         foreach = stage.get("foreach")
         if not foreach:
             continue
-        section = re.match(r"\$\{(\w+)\.variants\}", foreach).group(1)
+        m = re.match(r"\$\{(\w+)\.variants\}", foreach)
+        assert m is not None, f"stage {name}: foreach {foreach!r} does not match expected pattern"
+        section = m.group(1)
         variants = params[section]["variants"]
 
-        block = re.search(rf"^  {name}:\n(?:(?:    .*)?\n)*", dvc_raw, re.M).group(0)
+        bm = re.search(rf"^  {name}:\n(?:(?:    .*)?\n)*", dvc_raw, re.M)
+        assert bm is not None, f"stage {name} not found in dvc.yaml raw text"
+        block = bm.group(0)
         used = set(re.findall(r"\$\{item\.(\w+)\}", block))
 
         for arm_name, arm in variants.items():
@@ -206,6 +210,8 @@ def test_train_argparser_holds_no_hardcoded_defaults_for_params(params):
             continue
         if not node.args or not isinstance(node.args[0], ast.Constant):
             continue
+        if not isinstance(node.args[0].value, str):
+            continue
         flag = node.args[0].value.lstrip("-")
         if flag not in owned:
             continue
@@ -263,9 +269,11 @@ def _extract_function(name):
         The callable.
     """
     import argparse
+    from collections.abc import Callable
+    from typing import Any, cast
 
     tree = ast.parse((REPO_ROOT / "training" / "train.py").read_text())
     node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    namespace = {"argparse": argparse}
+    namespace: dict[str, Any] = {"argparse": argparse}
     exec(compile(ast.Module(body=[node], type_ignores=[]), "<extracted>", "exec"), namespace)
-    return namespace[name]
+    return cast(Callable[..., Any], namespace[name])
