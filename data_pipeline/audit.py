@@ -490,7 +490,7 @@ def main():
 
     report_df.to_csv(output_dir / "mask_correction_report.csv", index=False)
 
-    excluded: pd.DataFrame = report_df[report_df["excluded"]]
+    excluded = report_df[report_df["excluded"]]
     print(f"\nAudit: {n_start} pairs in, {len(kept_df)} kept, {len(excluded)} excluded")
     for reason, count in excluded.loc[:, "reason"].value_counts().items():
         # Size reasons embed the actual dimension, so collapse them for the tally.
