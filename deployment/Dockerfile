@@ -31,7 +31,7 @@ COPY data_pipeline/stitch.py data_pipeline/tile_dataset.py data_pipeline/transfo
 
 COPY deployment/__init__.py ./deployment/__init__.py
 
-COPY deployment/inference.py deployment/serve.py ./deployment/
+COPY deployment/inference.py deployment/prediction_log.py deployment/serve.py ./deployment/
 
 COPY deployment/static ./deployment/static
 
