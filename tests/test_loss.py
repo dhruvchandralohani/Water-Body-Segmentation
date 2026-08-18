@@ -273,6 +273,7 @@ def test_saturated_predictions_do_not_produce_nan():
     value.backward()
 
     assert torch.isfinite(value)
+    assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
 
 

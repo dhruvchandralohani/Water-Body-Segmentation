@@ -441,7 +441,7 @@ def main():
 
     # Explicit columns: with no size exclusions the list is empty, and a
     # column-less DataFrame would break the reason tally further down.
-    report_df = pd.DataFrame(size_excluded, columns=["filename", "excluded", "reason"])
+    report_df = pd.DataFrame(size_excluded, columns=pd.Index(["filename", "excluded", "reason"]))
     report_df["excluded"] = report_df["excluded"].astype(bool)
 
     # Pass 2: all-foreground masks, before correction can disguise them.
@@ -490,9 +490,9 @@ def main():
 
     report_df.to_csv(output_dir / "mask_correction_report.csv", index=False)
 
-    excluded = report_df[report_df["excluded"]]
+    excluded: pd.DataFrame = report_df[report_df["excluded"]]
     print(f"\nAudit: {n_start} pairs in, {len(kept_df)} kept, {len(excluded)} excluded")
-    for reason, count in excluded["reason"].value_counts().items():
+    for reason, count in excluded.loc[:, "reason"].value_counts().items():
         # Size reasons embed the actual dimension, so collapse them for the tally.
         print(f"  {count:>5}  {reason}")
 
