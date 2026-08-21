@@ -65,7 +65,14 @@ $targets = @(
     'mlruns',
 
     # Optuna study
-    'training/optuna_study.db'
+    'training/optuna_study.db',
+
+    # Served-prediction log and the rotating run logs. Not DVC outputs, so
+    # nothing else would remove them.
+    'logs',
+
+    # Test cache
+    '.pytest_cache'
 )
 
 function Get-SizeMB {
@@ -95,9 +102,16 @@ foreach ($t in $targets) {
 Write-Host ""
 Write-Host "KEPT (not touched by this script):" -ForegroundColor Green
 Write-Host "  data/raw/            source images and masks"
-Write-Host "  data/raw/*.dvc       pins for the raw data, if you ran dvc add"
+Write-Host "  data/raw/*.dvc       the committed data pins -- these ARE the versioning"
 Write-Host "  .dvc/config          repo config"
-Write-Host "  all code, dvc.yaml, params.yaml"
+Write-Host "  docs/findings.md     the measured results; regenerating them is the point"
+Write-Host "  all code, dvc.yaml, params.yaml, tests"
+Write-Host ""
+Write-Host "GONE AND NOT REGENERABLE:" -ForegroundColor Yellow
+Write-Host "  MLflow run history and the model registry, including the @production alias."
+Write-Host "  `dvc repro export` will fail until you promote a version again -- by design."
+Write-Host "  A fresh training run will NOT reproduce the previous baseline metrics."
+Write-Host "  Deterministic stages (build_manifest, audit, sampling_balance) will."
 Write-Host ""
 
 if (-not $Execute) {

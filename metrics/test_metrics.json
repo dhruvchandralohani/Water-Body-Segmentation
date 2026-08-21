@@ -1,13 +1,13 @@
 {
-  "run_id": "edec962c3c2641828e82806c9a831e4c",
+  "run_id": "2fc5d8f4b4944e24a13ad00e01ec913a",
   "threshold": 0.5,
   "num_images": 405,
-  "test_iou": 0.7428325137209218,
-  "test_dice": 0.8524427997214549,
-  "test_precision": 0.8729996953437944,
-  "test_recall": 0.8328317556812068,
-  "test_accuracy": 0.9394506782213476,
+  "test_iou": 0.7289435172375568,
+  "test_dice": 0.8432242117454898,
+  "test_precision": 0.874974524316358,
+  "test_recall": 0.8136974675767128,
+  "test_accuracy": 0.9364587526142569,
   "test_per_image_iou_min": 0.0,
-  "test_per_image_iou_mean": 0.6623294268145866,
-  "test_per_image_iou_max": 0.9881794673205995
+  "test_per_image_iou_mean": 0.643075835739424,
+  "test_per_image_iou_max": 0.988820598005002
 }

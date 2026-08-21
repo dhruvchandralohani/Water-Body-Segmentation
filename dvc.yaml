@@ -118,7 +118,7 @@ stages:
           cache: false
 
   # -------------------------------------------------------------------------
-  # 3. Optuna search. FROZEN: exploration, not part of the retraining path.
+  # 3. Optuna search -- this IS the training stage. FROZEN: exploration, not part of the retraining path.
   #    Run it deliberately (see the unfreeze note below), read the winner off
   #    the study, write those values into params.yaml:train and repro normally.
   #    The study DB uses persist:true so successive runs resume the same study
@@ -132,7 +132,7 @@ stages:
       --val-manifest ${paths.splits_dir}/val.csv
       --image-dir ${paths.raw_image_dir}
       --mask-dir ${paths.corrected_mask_dir}
-      --checkpoint-dir ${paths.tune_checkpoint_dir}
+      --checkpoint-dir ${paths.tune_checkpoint_dir}/${tune.study_name}
       --tracking-uri sqlite:///${paths.mlflow_db}
       --experiment-name ${train.experiment_name}
       --study-name ${tune.study_name}
@@ -149,9 +149,16 @@ stages:
       --tile-size ${data.tile_size}
       --overlap ${data.overlap}
       --num-workers ${data.num_workers}
-      --encoder-name ${model.encoder_name}
+      --arch ${tune.arch}
+      --encoder-name ${tune.encoder_name}
       --encoder-weights ${model.encoder_weights}
       --decoder-atrous-rates ${model.decoder_atrous_rates}
+      --lr-min ${tune.lr_min}
+      --lr-max ${tune.lr_max}
+      --weight-decay-min ${tune.weight_decay_min}
+      --weight-decay-max ${tune.weight_decay_max}
+      --dropout-min ${tune.dropout_min}
+      --dropout-max ${tune.dropout_max}
       --bce-weight ${loss.bce_weight}
       --dice-alpha ${loss.dice_alpha}
       --dice-beta ${loss.dice_beta}
@@ -159,6 +166,7 @@ stages:
       --min-delta ${train.min_delta}
       --lr-patience ${train.lr_patience}
       --seed ${train.seed}
+      --enqueue-params '${tune.enqueue_params}'
     deps:
       - training/tune.py
       - training/train.py
@@ -170,123 +178,6 @@ stages:
     outs:
       - ${paths.study_db}:
           persist: true
-
-  # -------------------------------------------------------------------------
-  # 4. Final training run at the hyperparameters in params.yaml:train
-  # -------------------------------------------------------------------------
-  train:
-    cmd: >-
-      python -m training.train
-      --train-manifest ${paths.splits_dir}/train.csv
-      --val-manifest ${paths.splits_dir}/val.csv
-      --image-dir ${paths.raw_image_dir}
-      --mask-dir ${paths.corrected_mask_dir}
-      --checkpoint-dir ${paths.checkpoint_dir}
-      --tracking-uri sqlite:///${paths.mlflow_db}
-      --experiment-name ${train.experiment_name}
-      --window-min ${data.window_min}
-      --window-max ${data.window_max}
-      --patch-size ${data.patch_size}
-      --fg-bias-ratio ${data.fg_bias_ratio}
-      --patches-per-epoch ${data.patches_per_epoch}
-      --tile-size ${data.tile_size}
-      --overlap ${data.overlap}
-      --num-workers ${data.num_workers}
-      --encoder-name ${model.encoder_name}
-      --encoder-weights ${model.encoder_weights}
-      --decoder-atrous-rates ${model.decoder_atrous_rates}
-      --bce-weight ${loss.bce_weight}
-      --dice-alpha ${loss.dice_alpha}
-      --dice-beta ${loss.dice_beta}
-      --lr ${train.lr}
-      --weight-decay ${train.weight_decay}
-      --dropout ${train.dropout}
-      --batch-size ${train.batch_size}
-      --epochs ${train.epochs}
-      --early-stopping-patience ${train.early_stopping_patience}
-      --min-delta ${train.min_delta}
-      --lr-patience ${train.lr_patience}
-      --seed ${train.seed}
-    deps:
-      - training/train.py
-      - training/model.py
-      - training/loss.py
-      - training/metrics.py
-      - training/tracking.py
-      - data_pipeline/data.py
-      - data_pipeline/patch_dataset.py
-      - data_pipeline/tile_dataset.py
-      - data_pipeline/transforms.py
-      - common/logging_setup.py
-      - ${paths.splits_dir}/train.csv
-      - ${paths.splits_dir}/val.csv
-      - ${paths.corrected_mask_dir}
-    outs:
-      - ${paths.checkpoint_dir}
-
-  # -------------------------------------------------------------------------
-  # 4b. Architecture benchmark. FROZEN, because it trains one model per variant
-  #     and must never be swept up by a plain `dvc repro`. Compare the runs in
-  #     MLflow -- they share an experiment and are tagged by `arch`.
-  #     Before spending the compute, dry-run the grid:
-  #         python -m training.model
-  #     Anything listed under "dropped" is a setting that variant will not get.
-  # -------------------------------------------------------------------------
-  benchmark:
-    foreach: ${benchmark.variants}
-    do:
-      frozen: true
-      cmd: >-
-        python -m training.train
-        --arch ${item.arch}
-        --encoder-name ${item.encoder_name}
-        --decoder-atrous-rates ${item.decoder_atrous_rates}
-        --seed ${item.seed}
-        --run-name ${key}
-        --experiment-name ${benchmark.experiment_name}
-        --epochs ${benchmark.epochs}
-        --checkpoint-dir ${paths.benchmark_checkpoint_dir}/${key}
-        --train-manifest ${paths.splits_dir}/train.csv
-        --val-manifest ${paths.splits_dir}/val.csv
-        --image-dir ${paths.raw_image_dir}
-        --mask-dir ${paths.corrected_mask_dir}
-        --tracking-uri sqlite:///${paths.mlflow_db}
-        --encoder-weights ${model.encoder_weights}
-        --window-min ${data.window_min}
-        --window-max ${data.window_max}
-        --patch-size ${data.patch_size}
-        --fg-bias-ratio ${data.fg_bias_ratio}
-        --patches-per-epoch ${data.patches_per_epoch}
-        --tile-size ${data.tile_size}
-        --overlap ${data.overlap}
-        --num-workers ${data.num_workers}
-        --bce-weight ${loss.bce_weight}
-        --dice-alpha ${loss.dice_alpha}
-        --dice-beta ${loss.dice_beta}
-        --lr ${benchmark.lr}
-        --scheduler ${benchmark.scheduler}
-        --warmup-frac ${benchmark.warmup_frac}
-        --weight-decay ${benchmark.weight_decay}
-        --dropout ${benchmark.dropout}
-        --batch-size ${train.batch_size}
-        --early-stopping-patience ${benchmark.early_stopping_patience}
-        --min-delta ${train.min_delta}
-        --lr-patience ${train.lr_patience}
-      deps:
-        - training/train.py
-        - training/model.py
-        - training/loss.py
-        - training/metrics.py
-        - training/tracking.py
-        - data_pipeline/data.py
-        - data_pipeline/patch_dataset.py
-        - data_pipeline/tile_dataset.py
-        - data_pipeline/transforms.py
-        - ${paths.splits_dir}/train.csv
-        - ${paths.splits_dir}/val.csv
-        - ${paths.corrected_mask_dir}
-      outs:
-        - ${paths.benchmark_checkpoint_dir}/${key}
 
   # -------------------------------------------------------------------------
   # 4c. Capacity vs regularization comparison. FROZEN, same reason as 4b.
@@ -494,9 +385,9 @@ stages:
       - common/mlflow_utils.py
       - ${paths.splits_dir}/test.csv
       - ${paths.corrected_mask_dir}
-      # not consumed directly (the model is pulled from MLflow), but this is
-      # what makes evaluate rerun whenever train produces a new model
-      - ${paths.checkpoint_dir}
+      # Not consumed directly -- the model is pulled from MLflow -- but this is
+      # what makes evaluate rerun once the study has produced a new best trial.
+      - ${paths.study_db}
     metrics:
       - ${paths.metrics_dir}/test_metrics.json:
           cache: false
@@ -521,6 +412,6 @@ stages:
       - deployment/export_model.py
       - deployment/promote_model.py
       - common/mlflow_utils.py
-      - ${paths.checkpoint_dir}
+      - ${paths.study_db}
     outs:
       - ${paths.exported_model_dir}

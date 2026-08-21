@@ -60,7 +60,7 @@ def measure_ratio(
     patch_size=256,
     window_range=(64, 2048),
     seed=42,
-    num_workers=4,
+    num_workers=1,
     batch_size=32,
 ):
     """Sample patches at one fg_bias_ratio and return their water fractions.
@@ -143,7 +143,7 @@ def main():
     parser.add_argument("--patch-size", type=int, default=256)
     parser.add_argument("--window-min", type=int, default=64)
     parser.add_argument("--window-max", type=int, default=2048)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--class-balance-json",

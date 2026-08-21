@@ -24,7 +24,6 @@ paths:
   # a tracked output that lives inside another stage's tracked output.
   checkpoint_dir: training/checkpoints                       # train stage
   tune_checkpoint_dir: training/checkpoints_tune             # tune (untracked, transient)
-  benchmark_checkpoint_dir: training/checkpoints_benchmark   # benchmark arms
   capacity_checkpoint_dir: training/checkpoints_capacity     # capacity arms
   loss_checkpoint_dir: training/checkpoints_loss             # loss ablation arms
   batching_checkpoint_dir: training/checkpoints_batching     # batching arms
@@ -114,69 +113,43 @@ train:
 # Stage: tune (frozen -- run on demand, not part of a plain `dvc repro`)
 # ---------------------------------------------------------------------------
 tune:
-  n_trials: 30
-  study_name: water_body_tuning
-  epochs: 15                    # per-trial budget (Study 2 setting)
+  # Tuning IS the architecture comparison. A study run to convergence gives each
+  # architecture its own optimum, which is the fair basis for comparing them --
+  # and Optuna's pruner makes that affordable, since bad trials die at the warmup
+  # epoch rather than running the full budget. A separate fixed-hyperparameter
+  # benchmark would have been cheaper and less honest.
+  #
+  # To tune a different architecture: change arch, encoder_name and study_name
+  # together, then run the stage. Studies share one storage file, keyed by name,
+  # so previous results are preserved.
+  arch: deeplabv3plus
+  # mit_b0 is load-bearing for segformer: smp defaults it to a resnet34 encoder,
+  # which is a SegFormer-style decoder on a CNN, not a transformer.
+  encoder_name: mobilenet_v2
+  study_name: water_body_tuning_deeplabv3plus_mobilenet_v2
+
+  n_trials: 1
+  # A JSON object pins a specific configuration: Optuna runs exactly these values
+  # as the next trial instead of sampling them, and an enqueued trial is never
+  # pruned -- a deliberately chosen config should run its full budget rather than
+  # be cut off against a median it was not competing with.
+  # Empty string means sample normally.
+  #   enqueue_params: '{"lr": 4.23e-04, "weight_decay": 1.69e-03, "dropout": 0.039}'
+  enqueue_params: ""
+  epochs: 25
   pruner_startup_trials: 5
   pruner_warmup_epochs: 3
 
-# ---------------------------------------------------------------------------
-# Stage: benchmark (frozen -- run on demand)
-#
-# Fixed-hyperparameter architecture comparison. Every variant runs at the
-# train.* hyperparameters above, the same seed, splits, loss and augmentation.
-# That is deliberate and it is the benchmark's main limitation: those
-# hyperparameters were tuned on deeplabv3plus_mbv2_recalibrated, so the
-# comparison is biased toward it. Say so when reporting the result.
-#
-# DVC foreach has no cross-product, so multi-seed means duplicate entries
-# with different seed values (e.g. unet_mbv2_s7).
-# ---------------------------------------------------------------------------
-benchmark:
-  experiment_name: water_body_arch_benchmark
-  epochs: 20                      # arms were still improving at epoch 14 of 15
-
-  # Hyperparameters scoped to this grid, not shared with train.*. Neutral,
-  # literature-standard values rather than the Optuna result, which was tuned on
-  # DeepLabV3+/MobileNetV2 and would hand that arm a home-field advantage. The
-  # price is that no arm sits at its own optimum -- the correct trade for a
-  # comparison, and worth stating when reporting it. Keeping them separate also
-  # means retuning the grid never invalidates the production train stage.
-  lr: 2.0e-04                     # standard AdamW segmentation fine-tuning range
-  weight_decay: 0.01              # AdamW canonical; also the SegFormer paper's value
-  # 0.0, not 0.442: decoder_aspp_dropout exists only on DeepLabV3+, so any
-  # non-zero value regularizes one arm and not the other two.
-  dropout: 0.0
-  # Equal to the epoch budget so it never fires: a fixed-budget comparison needs
-  # every arm to get the same number of epochs. Each still reports its best
-  # checkpoint, so nothing overfit is selected. Cosine also needs the full
-  # horizon known in advance, which early stopping would cut short.
-  early_stopping_patience: 20
-  scheduler: cosine               # warmup + cosine; see build_lr_schedule()
-  warmup_frac: 0.05               # 1000 of 20000 steps = one epoch of warmup
-  variants:
-    # Three architecture FAMILIES, encoder and decoder taken as a unit. The
-    # encoder cannot be held constant across all three: a MobileNetV2 encoder
-    # inside Segformer would not be a transformer, which is the thing being
-    # compared. Report parameter counts alongside the scores.
-    deeplabv3plus_mbv2:
-      arch: deeplabv3plus
-      encoder_name: mobilenet_v2
-      decoder_atrous_rates: "2 4 6"
-      seed: 42
-    unet_mbv2:
-      arch: unet
-      encoder_name: mobilenet_v2
-      decoder_atrous_rates: "2 4 6"   # dropped by unet; kept so the grid is uniform
-      seed: 42
-    # mit_b0 is load-bearing: smp's Segformer defaults to a resnet34 encoder,
-    # which would give a SegFormer-style MLP decoder on a CNN -- not a
-    # transformer at all.
-    segformer_mitb0:
-      arch: segformer
-      encoder_name: mit_b0
-      decoder_atrous_rates: "2 4 6"   # dropped by segformer
-      seed: 42
+  # Wide by design. The previous range was narrowed around one architecture's
+  # answer, which would stop any other architecture finding its own -- and
+  # transformers generally want a lower learning rate than CNNs.
+  lr_min: 1.0e-05
+  lr_max: 1.0e-03
+  weight_decay_min: 1.0e-05
+  weight_decay_max: 1.0e-01
+  # Searched only when the architecture has ASPP; see supports_aspp_dropout().
+  dropout_min: 0.0
+  dropout_max: 0.5
 
 # ---------------------------------------------------------------------------
 # Stage: capacity (frozen -- run on demand)
@@ -189,29 +162,23 @@ benchmark:
 # ---------------------------------------------------------------------------
 capacity:
   experiment_name: water_body_capacity
-  epochs: 30                      # longer than the arch benchmark: overfitting
-                                  # onset was around epoch 6-7, and the point is
-                                  # to see whether each arm moves it
+  epochs: 30
   variants:
-    # Current model: high dropout, everything trainable.
     baseline_dropout_044:
       dropout: 0.442
       freeze_encoder: false
       decoder_channels: null
       seed: 42
-    # Same capacity, no regularization -- shows what dropout was covering for.
     baseline_no_dropout:
       dropout: 0.0
       freeze_encoder: false
       decoder_channels: null
       seed: 42
-    # Fewer trainable parameters instead of noisier ones.
     frozen_encoder:
       dropout: 0.0
       freeze_encoder: true
       decoder_channels: null
       seed: 42
-    # Smaller decoder instead of a regularized full-size one.
     small_decoder:
       dropout: 0.0
       freeze_encoder: false
@@ -221,25 +188,17 @@ capacity:
 # ---------------------------------------------------------------------------
 # Stage: lossablation (frozen -- run on demand)
 #
-# Answers "BCE+Tversky weights never ablated against focal loss or weighted BCE".
-# Every arm keeps the same architecture, data, schedule and seed; only the loss
-# changes.
-#
-# CAVEAT to state when reporting: lr=9.18e-05 was tuned with plain BCE+Dice.
+# CAVEAT to state when reporting: the learning rate is tuned for one loss.
 # Losses differ in gradient scale -- focal suppresses an easy pixel's gradient
-# by ~400x at gamma=2 -- so a fixed lr favours the baseline. This is a harsher
-# version of the same bias in the arch benchmark, because loss scale and lr
-# interact directly.
+# by ~400x at gamma=2 -- so a fixed lr favours the baseline.
 #
 # Judge on precision AND recall, not IoU alone: these arms trade FN against FP,
-# and the mechanism shows in the split even when IoU barely moves. Baseline is
-# precision 0.8574 / recall 0.8480.
+# and the mechanism shows in the split even when IoU barely moves.
 # ---------------------------------------------------------------------------
 lossablation:
   experiment_name: water_body_loss
   epochs: 30
   variants:
-    # Current loss: BCE + Dice (Tversky at the degenerate alpha == beta).
     bce_dice:
       pixel_loss: bce
       pixel_weight: 0.5
@@ -249,8 +208,7 @@ lossablation:
       focal_gamma: 2.0
       seed: 42
     # The knob already in the code, finally turned. beta > alpha punishes false
-    # negatives -- the recall bias for thin, elongated features. Note the
-    # convention: in this codebase alpha is on FP, opposite to the Tversky paper.
+    # negatives -- in THIS codebase alpha is on FP, opposite to the Tversky paper.
     bce_tversky_recall:
       pixel_loss: bce
       pixel_weight: 0.5
@@ -259,8 +217,7 @@ lossablation:
       pos_weight: 1.0
       focal_gamma: 2.0
       seed: 42
-    # pos_weight is not a guess: it is the measured background:foreground pixel
-    # ratio of 4.4 from metrics/class_balance.json.
+    # pos_weight is the measured background:foreground ratio, not a guess.
     weighted_bce_dice:
       pixel_loss: weighted_bce
       pixel_weight: 0.5
@@ -281,27 +238,8 @@ lossablation:
 # ---------------------------------------------------------------------------
 # Stage: batching (frozen -- run on demand)
 #
-# Answers "batch size 8 accepted as a hardware limit without exploring gradient
-# accumulation". The premise is already measured false: batch 8 reserves 1374 MB
-# of a 4 GB card and batch 16 runs natively at 2708 MB. So the interesting
-# question is not "does accumulation let me exceed 8" but the one these three
-# arms isolate:
-#
-#   batch8            the tuned baseline
-#   batch16_native    real batch 16 -- BN sees 16 samples
-#   batch8_accum2     effective batch 16 -- identical gradients, BN sees 8
-#
 # batch16_native vs batch8_accum2 differ in exactly one thing: the sample count
-# BatchNorm normalises over. Gradients are mathematically identical. If they
-# score the same, accumulation is a free stand-in for a bigger batch on this
-# model; if they diverge, BN batch size is doing the work and accumulation
-# cannot substitute for it.
-#
-# effective_batch32 needs accumulation outright -- ~67 MB fixed + ~152 MB per
-# sample puts native batch 32 near 4.9 GB, past the card.
-#
-# CAVEAT: lr 9.18e-05 was tuned at batch 8. Larger effective batches usually
-# want a larger lr, so the bigger-batch arms are handicapped at fixed lr.
+# BatchNorm normalises over. Gradients are mathematically identical.
 # ---------------------------------------------------------------------------
 batching:
   experiment_name: water_body_batching

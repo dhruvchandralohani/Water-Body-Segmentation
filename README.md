@@ -7,6 +7,9 @@ evaluation, and a Dockerised FastAPI inference service.
 Every number the project reports is produced by a pipeline stage and written to
 a versioned artifact. Nothing is derived by hand.
 
+<!-- What the project measured, and where several of those measurements contradicted
+the assumption they were meant to support: [`docs/findings.md`](docs/findings.md). -->
+
 ## Project structure
 
 ```
