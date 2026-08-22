@@ -14,6 +14,7 @@ path -- decoding, temp-file handling, encoding, error mapping -- not the model.
 
 import base64
 import json
+import re
 
 import cv2
 import numpy as np
@@ -62,7 +63,6 @@ def client(app_module, tmp_path, monkeypatch):
     def fake_predict_image(model, path, device, **kwargs):
         """Stand in for the real tiled inference, keeping its return contract."""
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
-        assert image is not None, f"cv2.imread failed for {path}"
         height, width = image.shape[:2]
         mask = np.zeros((height, width), dtype=np.uint8)
         mask[: height // 2, :] = 1  # top half "water"
@@ -359,3 +359,128 @@ def test_drift_survives_a_truncated_final_line(client):
     payload = client.get("/drift").json()
     assert payload["status"] == "ok"
     assert payload["n_requests"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics
+#
+# The whole monitoring stack reads /metrics, and until now nothing tested it.
+# Counters live in a process-global registry, so these read a value before and
+# after and assert the DELTA -- an absolute assertion would pass or fail based
+# on which tests ran first.
+# ---------------------------------------------------------------------------
+
+
+def metric_value(client, name, labels=""):
+    """Read one metric's current value from the /metrics endpoint.
+
+    Args:
+        client: The TestClient.
+        name: Metric name.
+        labels: Optional label string as it appears in the exposition, e.g.
+            '{outcome="success"}'.
+
+    Returns:
+        The value as a float, or 0.0 if the series does not exist yet.
+    """
+    wanted = f"{name}{labels} "
+    for line in client.get("/metrics").text.splitlines():
+        if line.startswith(wanted):
+            return float(line.rsplit(" ", 1)[1])
+    return 0.0
+
+
+def test_metrics_endpoint_serves_prometheus_format(client):
+    """Content type matters: Prometheus rejects a payload it cannot parse."""
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "text/plain" in response.headers["content-type"]
+    assert "# HELP water_body_predictions_total" in response.text
+    assert "# TYPE water_body_predicted_water_fraction histogram" in response.text
+
+
+def test_a_prediction_increments_the_success_counter(client):
+    """The counter the dashboard's request-rate panel is built on."""
+    before = metric_value(client, "water_body_predictions_total", '{outcome="success"}')
+    upload(client)
+    after = metric_value(client, "water_body_predictions_total", '{outcome="success"}')
+
+    assert after == before + 1
+
+
+def test_a_prediction_observes_the_water_fraction(client):
+    """The drift signal itself -- the reason this stack exists.
+
+    Checks the histogram's _sum as well as its _count: a wired-up-but-always-
+    zero observation would increment the count and leave the mean at zero,
+    which is exactly the failure that would make the drift panel lie.
+    """
+    count_before = metric_value(client, "water_body_predicted_water_fraction_count")
+    sum_before = metric_value(client, "water_body_predicted_water_fraction_sum")
+
+    upload(client)
+
+    assert metric_value(client, "water_body_predicted_water_fraction_count") == count_before + 1
+    # The stub predicts exactly half the image as water.
+    assert metric_value(client, "water_body_predicted_water_fraction_sum") == pytest.approx(
+        sum_before + 0.5, abs=0.01
+    )
+
+
+def test_a_rejected_request_is_not_counted_as_a_success(client):
+    """Otherwise the error-rate alert can never fire.
+
+    A 400 must land under its own outcome label and leave success untouched --
+    if failures were counted as successes the ratio stays flat no matter how
+    badly the service is doing.
+    """
+    success_before = metric_value(client, "water_body_predictions_total", '{outcome="success"}')
+    bad_before = metric_value(client, "water_body_predictions_total", '{outcome="bad_request"}')
+
+    upload(client, data=b"not an image", filename="notes.txt", content_type="text/plain")
+
+    assert metric_value(client, "water_body_predictions_total", '{outcome="success"}') == success_before
+    assert metric_value(client, "water_body_predictions_total", '{outcome="bad_request"}') == bad_before + 1
+
+
+def test_outcome_labels_stay_a_small_fixed_set(client):
+    """Guards against a high-cardinality label being added later.
+
+    Every distinct label value is a separate time series. Putting a filename,
+    an error message or a request id in here would degrade Prometheus badly and
+    the damage is not obvious until the instance is already struggling.
+    """
+    upload(client)
+    upload(client, data=b"x", filename="a.txt", content_type="text/plain")
+
+    outcomes = set(re.findall(r'water_body_predictions_total\{outcome="([^"]+)"\}', client.get("/metrics").text))
+    assert outcomes <= {"success", "bad_request", "no_model", "inference_error"}, (
+        f"unexpected outcome labels: {outcomes}"
+    )
+
+
+def test_the_training_reference_is_exported(client, app_module):
+    """The gauge the drift alert divides by.
+
+    Without it the alert expression divides by zero and never fires -- so a
+    missing class_balance.json disables drift detection silently.
+    """
+    app_module.CLASS_BALANCE_PATH = str(client.balance_path)
+    client.balance_path.write_text(json.dumps({"overall": {"foreground_fraction": 0.1843}}))
+    app_module.metrics_exporter.set_training_reference(
+        app_module.prediction_log.reference_water_fraction(str(client.balance_path))
+    )
+
+    assert metric_value(client, "water_body_training_water_fraction") == pytest.approx(0.1843)
+
+
+def test_stage_timings_do_not_double_count_total(client):
+    """'total' belongs to the latency histogram, not the per-stage one.
+
+    Exporting it in both would make a stacked stage panel add up to twice the
+    real request time.
+    """
+    upload(client)
+    assert 'water_body_stage_duration_seconds_count{stage="total"}' not in client.get("/metrics").text
+    assert 'water_body_stage_duration_seconds_count{stage="inference"}' in client.get("/metrics").text

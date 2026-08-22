@@ -45,6 +45,21 @@ jobs:
       - name: Ruff
         run: ruff check .
 
+      # Manifests are part of the deliverable now, and a typo in one is
+      # currently only discovered by `kubectl apply` against a live cluster.
+      # kubeconform validates against the upstream schemas in seconds, with no
+      # cluster involved.
+      - name: Validate Kubernetes manifests
+        run: |
+          curl -sSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz kubeconform
+          # -strict rejects unknown fields, which is what catches a misspelled
+          # key that would otherwise be silently ignored by the API server.
+          ./kubeconform -strict -summary \
+            -ignore-filename-pattern 'dashboards/.*' \
+            deployment/k8s/
+
   # --------------------------------------------------------------------------
   # The main suite. CPU torch only: the CUDA build is several gigabytes and
   # there is no GPU on a runner to use it with.
@@ -174,3 +189,67 @@ jobs:
       - name: Stop
         if: always()
         run: docker rm -f water-seg || true
+
+  # --------------------------------------------------------------------------
+  # Publishes the serving image to GHCR on main. This is CD up to the artifact
+  # boundary and no further, deliberately.
+  #
+  # The deploy step is absent because it cannot be honest here: the target is a
+  # kind cluster on a laptop, and a GitHub runner has no route to it. Handing CI
+  # a kubeconfig would not change that -- the API server is not reachable from
+  # outside the machine it runs on.
+  #
+  # The real resolutions, neither of which is a workflow file:
+  #   - GitOps (Argo CD / Flux): the cluster watches this repo and pulls. Works
+  #     behind NAT precisely because nothing needs to reach in.
+  #   - A cluster with a reachable API server, plus credentials in secrets.
+  #
+  # Publishing a digest-pinned image is the part that is genuinely useful today:
+  # it makes every commit on main deployable by whatever does the deploying.
+  # --------------------------------------------------------------------------
+  publish:
+    name: publish image
+    runs-on: ubuntu-latest
+    needs: [static, tests, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same stub the docker job uses: the exported model is a DVC output and
+      # absent from a fresh clone. The published image is therefore structurally
+      # correct but carries no weights -- a real pipeline would pull the
+      # promoted artifact here, which needs a DVC remote or a tracking server.
+      - name: Stub the exported model
+        run: |
+          mkdir -p deployment/exported_model/best_model
+          printf '{"stub": true}\n' > deployment/exported_model/best_model/MLmodel
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/water-body-inference
+          # Tagged by commit SHA as well as latest: "latest" cannot be rolled
+          # back to, and a deployment referencing it has no record of what it
+          # actually ran.
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deployment/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

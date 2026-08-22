@@ -13,9 +13,6 @@ torch==2.8.0
 torchvision==0.23.0
 segmentation-models-pytorch==0.5.0
 
-# Testing
-pytest
-
 # Experiment tracking and tuning
 mlflow==3.15.1
 optuna==4.5.0
@@ -30,3 +27,10 @@ python-multipart==0.0.32
 pydantic==2.13.4
 pyyaml==6.0.3
 dvc==3.63.0
+
+# Needed by tests/test_serving.py, which imports deployment/serve.py:
+# prometheus-client for the metrics exporter, httpx for FastAPI's TestClient.
+# Both are runtime deps of the serving image too, pinned in
+# deployment/requirements.txt; listed here so CI can import serve.py.
+prometheus-client==0.24.1
+httpx==0.28.1
