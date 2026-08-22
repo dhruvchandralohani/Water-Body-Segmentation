@@ -1,0 +1,17 @@
+# ClusterIP by default: the service is reached from inside the cluster, or via
+# `kubectl port-forward` locally. NodePort/Ingress is a cluster-specific choice
+# and does not belong pinned in the repo.
+apiVersion: v1
+kind: Service
+metadata:
+  name: water-body-inference
+  labels:
+    app: water-body-inference
+spec:
+  type: ClusterIP
+  selector:
+    app: water-body-inference
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

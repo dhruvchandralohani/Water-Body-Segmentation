@@ -173,6 +173,44 @@ def is_memory_error(exc):
     return any(marker in str(exc) for marker in _MEMORY_ERROR_MARKERS)
 
 
+def parse_enqueue_params(raw):
+    """Parse the --enqueue-params value into a dict, tolerating shell quoting.
+
+    dvc.yaml wraps the value in single quotes so a JSON object containing spaces
+    survives as one argument. POSIX shells strip those quotes; PowerShell does
+    not, so Python receives the literal two characters '' -- which is truthy and
+    is not valid JSON. Stripping them here means one command line works on both.
+
+    Args:
+        raw: The raw argument value.
+
+    Returns:
+        A dict of parameter values, or an empty dict to sample normally.
+
+    Raises:
+        ValueError: If the value is non-empty but not a JSON object.
+    """
+    text = (raw or "").strip()
+    for quote in ("'", '"'):
+        if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
+            text = text[1:-1].strip()
+
+    if text.lower() in ("", "none", "null"):
+        return {}
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"--enqueue-params is not valid JSON: {text!r}. Expected an object such as "
+            '\'{"lr": 4.2e-04, "dropout": 0.04}\', or an empty value to sample normally.'
+        ) from exc
+
+    if not isinstance(parsed, dict):
+        raise ValueError(f"--enqueue-params must be a JSON object, got {type(parsed).__name__}")
+    return parsed
+
+
 def supports_aspp_dropout(arch):
     """Whether this architecture actually accepts decoder_aspp_dropout.
 
@@ -241,8 +279,8 @@ def main():
         ),
     )
 
-    if args.enqueue_params:
-        fixed = json.loads(args.enqueue_params)
+    fixed = parse_enqueue_params(args.enqueue_params)
+    if fixed:
         study.enqueue_trial(fixed)
         logger.info(f"Enqueued a fixed-parameter trial: {fixed} (will not be pruned)")
 

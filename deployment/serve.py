@@ -45,7 +45,7 @@ from pydantic import BaseModel
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from common.logging_setup import setup_logger
-from deployment import prediction_log
+from deployment import metrics_exporter, prediction_log
 from deployment.inference import load_model, predict_image
 
 logger = setup_logger("serve", log_file="serve.log")
@@ -85,6 +85,19 @@ async def lifespan(app: FastAPI):
         model_state["model_version"] = mlmodel.get("run_id", "unknown")
     except Exception as e:
         logger.info(f"Could not read model version from MLmodel file: {e}")
+
+    # Published once at startup. model_info is a labels-carry-the-data gauge:
+    # a dashboard joins on it so a shift in the served distribution can be lined
+    # up against which model version was live at the time.
+    metrics_exporter.set_model_info(
+        model_state["model_name"],
+        model_state["model_version"],
+        device,
+        loaded=model_state["model"] is not None,
+    )
+    metrics_exporter.set_training_reference(
+        prediction_log.reference_water_fraction(CLASS_BALANCE_PATH)
+    )
 
     logger.info(f"Model loaded in {time.time() - t0:.2f}s, ready to serve")
     yield
@@ -151,9 +164,42 @@ async def drift():
     return {"status": "ok", **summary}
 
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus scrape endpoint.
+
+    Single-process registry, which is correct here only because the Dockerfile
+    pins uvicorn to --workers 1. With multiple workers each would keep its own
+    counters and a scrape would hit whichever one answered, so scaling is done
+    by adding pods rather than workers -- Prometheus aggregates across pods.
+    """
+    payload, content_type = metrics_exporter.render()
+    return Response(content=payload, media_type=content_type)
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness probe: 200 only once the model is actually loaded.
+
+    Separate from /health because a Kubernetes readiness probe decides by
+    status code, and /health answers 200 either way by design -- an operator
+    asking "what is wrong" needs the body, not a closed door. Returning 503
+    here keeps a pod out of the Service until it can serve, which matters
+    because the model is loaded during startup and takes seconds.
+    """
+    if model_state["model"] is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    return {"status": "ready", "model_version": model_state["model_version"]}
+
+
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Return the current model loading status and configuration."""
+    """Return the current model loading status and configuration.
+
+    Always 200, including when no model is loaded: this endpoint is for humans
+    and dashboards reading the body. /ready is the one that answers with a
+    status code.
+    """
     return HealthResponse(
         status="ok" if model_state["model"] is not None else "model not loaded",
         model_loaded=model_state["model"] is not None,
@@ -180,12 +226,15 @@ async def predict(
 ):
     """Run inference on an uploaded image and return a segmentation mask response."""
     if model_state["model"] is None:
+        metrics_exporter.observe_failure("no_model")
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     if format not in ("json", "png"):
+        metrics_exporter.observe_failure("bad_request")
         raise HTTPException(status_code=400, detail=f"format must be 'json' or 'png', got '{format}'")
 
     if not file.content_type or not file.content_type.startswith("image/"):
+        metrics_exporter.observe_failure("bad_request")
         raise HTTPException(status_code=400, detail=f"Expected an image file, got content-type {file.content_type}")
 
     logger.info(f"Request received: filename={file.filename} content_type={file.content_type} format={format}")
@@ -208,6 +257,7 @@ async def predict(
             use_fp16=USE_FP16,
         )
     except Exception as e:
+        metrics_exporter.observe_failure("inference_error")
         logger.info(f"Request failed: filename={file.filename} error={e}")
         # `from e` keeps the original traceback attached, so a failure inside
         # inference is distinguishable from one raised by the handler itself.
@@ -239,11 +289,15 @@ async def predict(
     # Summary statistics only -- no image data, nothing reconstructable. Failure
     # is swallowed inside append(): a full disk is not a reason to fail a
     # prediction that already succeeded.
-    prediction_log.append(
-        prediction_log.summarize_request(
-            original_bgr, mask, info["timings"]["total"], filename=file.filename
-        ),
-        PREDICTION_LOG,
+    record = prediction_log.summarize_request(
+        original_bgr, mask, info["timings"]["total"], filename=file.filename
+    )
+    prediction_log.append(record, PREDICTION_LOG)
+
+    # The same numbers, exported for scraping. The JSONL file is per-pod and
+    # dies with it; the histogram aggregates across replicas and survives them.
+    metrics_exporter.observe_prediction(
+        record["predicted_water_fraction"], info["timings"]["total"], info["timings"]
     )
 
     if format == "png":

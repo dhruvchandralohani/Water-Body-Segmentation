@@ -1,0 +1,213 @@
+# Prometheus, scraping the inference pods directly.
+#
+# Why this earns its place rather than being dashboard decoration: the drift
+# signal is already computed per request, but it lands in an emptyDir that is
+# per-pod and lost on restart. With two replicas /drift reports one pod's view
+# of its own traffic. A scraped histogram aggregates across every pod and
+# outlives them, which is the only way the comparison against the training-time
+# water fraction means anything in a cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    scrape_configs:
+      - job_name: water-body-inference
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Only pods that opted in via annotation.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Carry the pod name through so a single misbehaving replica can be
+          # identified rather than averaged away.
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: pod
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules
+data:
+  alerts.yml: |
+    groups:
+      - name: water-body-inference
+        rules:
+          # Recording rule: the served water fraction as a single number, so the
+          # dashboard and the alert below agree by construction rather than by
+          # two people writing the same PromQL twice.
+          - record: water_body:served_water_fraction:mean5m
+            expr: |
+              rate(water_body_predicted_water_fraction_sum[5m])
+              / rate(water_body_predicted_water_fraction_count[5m])
+
+          # The drift alert. Deliberately a RATIO against the training gauge,
+          # not an absolute threshold: retrain on different data and the
+          # reference moves with it, so a hardcoded 0.18 would silently become
+          # wrong. `for: 30m` because a genuinely different input distribution
+          # persists, while a handful of unusual images does not.
+          - alert: PredictedWaterFractionDrift
+            expr: |
+              abs(
+                water_body:served_water_fraction:mean5m
+                - water_body_training_water_fraction
+              ) / water_body_training_water_fraction > 0.5
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: Served water fraction has diverged from the training distribution
+              description: >
+                The mean predicted water fraction differs from the training-time
+                reference by more than 50% for half an hour. Either the incoming
+                imagery is unlike what the model was trained on, or the model is
+                failing in a way accuracy metrics cannot see -- there are no
+                labels at serving time, so this is the available signal.
+
+          # A model that fails closed returns exact zeros, which a drifting mean
+          # can hide: a run of empty masks and a run of half-empty ones can
+          # average the same. Tracked separately for that reason.
+          - alert: EmptyPredictionSpike
+            expr: |
+              rate(water_body_empty_predictions_total[10m])
+              / rate(water_body_predictions_total{outcome="success"}[10m]) > 0.5
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: Over half of predictions contain no water at all
+
+          - alert: NoModelLoaded
+            expr: water_body_model_loaded == 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: A pod is running without a loaded model
+
+          - alert: InferenceErrorRate
+            expr: |
+              rate(water_body_predictions_total{outcome="inference_error"}[10m])
+              / rate(water_body_predictions_total[10m]) > 0.1
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: More than 10% of requests are failing during inference
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+---
+# Pod discovery needs read access to the API server. list/watch on pods only --
+# nothing here needs secrets or write access.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, endpoints]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.1.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            # Local development: 7 days is plenty and bounds the emptyDir.
+            - --storage.tsdb.retention.time=7d
+          ports:
+            - name: web
+              containerPort: 9090
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+            - name: rules
+              mountPath: /etc/prometheus/rules
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: rules
+          configMap:
+            name: prometheus-rules
+        - name: data
+          # emptyDir: metrics history is lost if Prometheus restarts. Acceptable
+          # for a local cluster; a real deployment wants a PVC.
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app: prometheus
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - name: web
+      port: 9090
+      targetPort: web

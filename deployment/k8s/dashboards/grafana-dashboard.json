@@ -1,0 +1,191 @@
+{
+  "title": "Water Body Segmentation - Serving",
+  "uid": "water-body-serving",
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Predicted water fraction vs training reference",
+      "description": "The panel the rest exists to support. The served mean is compared against the pixel-level water fraction of the training data; a sustained gap is the drift signal. There are no labels at serving time, so this is the available evidence that something changed.",
+      "gridPos": {
+        "h": 9,
+        "w": 16,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "unit": "percentunit"
+        }
+      },
+      "targets": [
+        {
+          "expr": "water_body:served_water_fraction:mean5m",
+          "legendFormat": "served (5m mean)"
+        },
+        {
+          "expr": "water_body_training_water_fraction",
+          "legendFormat": "training reference"
+        },
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(water_body_predicted_water_fraction_bucket[5m])) by (le))",
+          "legendFormat": "served median"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Relative drift",
+      "description": "Ratio, not an absolute gap: retraining moves the reference, and a hardcoded threshold would silently go stale. Alerts above 50%.",
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.3
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "abs(water_body:served_water_fraction:mean5m - water_body_training_water_fraction) / water_body_training_water_fraction",
+          "legendFormat": "drift"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Empty predictions (share of successful requests)",
+      "description": "A model failing closed emits exact zeros. A drifting mean hides that -- all-empty and half-empty can average alike -- so it is counted separately.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(water_body_empty_predictions_total[10m]) / rate(water_body_predictions_total{outcome=\"success\"}[10m])",
+          "legendFormat": "empty share"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Request outcomes",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(water_body_predictions_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency percentiles",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(water_body_prediction_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(water_body_prediction_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(water_body_prediction_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Time per stage (p95)",
+      "description": "Shows where the time goes: load, tile, inference, stitch. 'total' is excluded -- it is the latency panel and would double-count.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(water_body_stage_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{stage}}"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Live model versions",
+      "description": "Which model each pod is serving. Correlate a step change in the drift panel against a rollout here.",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "expr": "water_body_model_info",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    }
+  ]
+}

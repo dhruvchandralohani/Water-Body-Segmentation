@@ -40,3 +40,6 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+wbi.tar
+*.tar

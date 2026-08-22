@@ -125,7 +125,7 @@ stages:
   #    instead of DVC deleting it first.
   # -------------------------------------------------------------------------
   tune:
-    frozen: true
+    # frozen: true
     cmd: >-
       python -m training.tune
       --train-manifest ${paths.splits_dir}/train.csv

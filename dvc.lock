@@ -151,12 +151,12 @@ stages:
       size: 27659
     - path: training/tune.py
       hash: md5
-      md5: c50cbe7ad252663668ab4c326c853043
-      size: 11752
+      md5: 1cfc06b6c3709c34723dbc08ec3b1b7b
+      size: 13106
     outs:
     - path: training/optuna_study.db
       hash: md5
-      md5: 0a869a69243ac41c2468775d208a6d07
+      md5: 8616529958c6cf14f74bd5e39bf822c3
       size: 131072
   evaluate:
     cmd: python -m training.test_model --test-manifest 

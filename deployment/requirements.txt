@@ -8,3 +8,4 @@ uvicorn[standard]==0.52.1
 python-multipart==0.0.32
 pydantic==2.13.4
 pyyaml==6.0.3
+prometheus-client==0.24.1

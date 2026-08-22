@@ -31,7 +31,15 @@ COPY data_pipeline/stitch.py data_pipeline/tile_dataset.py data_pipeline/transfo
 
 COPY deployment/__init__.py ./deployment/__init__.py
 
-COPY deployment/inference.py deployment/prediction_log.py deployment/serve.py ./deployment/
+# prediction_log.py is imported by serve.py -- omitting it makes the container
+# fail at import time, after a successful build.
+COPY deployment/inference.py deployment/serve.py deployment/prediction_log.py \
+     deployment/metrics_exporter.py ./deployment/
+
+# The training-time water fraction /drift compares served predictions against.
+# Small, versioned in git (cache: false), and without it /drift can report a
+# mean but nothing to judge it by.
+COPY metrics/class_balance.json ./metrics/class_balance.json
 
 COPY deployment/static ./deployment/static
 
@@ -40,6 +48,23 @@ COPY deployment/exported_model/best_model ./deployment/exported_model/best_model
 ENV MODEL_PATH=/app/deployment/exported_model/best_model
 
 ENV DEVICE=cpu
+
+ENV CLASS_BALANCE_PATH=/app/metrics/class_balance.json
+
+ENV PREDICTION_LOG=/app/logs/predictions.jsonl
+
+# Absolute, and matching the volume mount. The final WORKDIR is /app/deployment,
+# so a relative "logs" would resolve to /app/deployment/logs -- somewhere the
+# mounted volume is not.
+ENV LOG_DIR=/app/logs
+
+# Created and owned before dropping privileges. /app is root-owned, so a
+# non-root process cannot mkdir inside it at runtime -- which is exactly how
+# this failed the first time: PermissionError on 'logs' during import, before
+# uvicorn had even started.
+RUN mkdir -p /app/logs && chown -R 1000:1000 /app
+
+USER 1000
 
 EXPOSE 8000
 

@@ -1,0 +1,137 @@
+# Kubernetes Deployment for the inference service.
+#
+# Two properties of this particular service shape the manifest:
+#
+# 1. The model is loaded during FastAPI startup, not lazily on first request.
+#    That makes startup slow and failure-prone in a way a probe has to account
+#    for -- hence startupProbe, which gives the load time to finish before
+#    liveness begins judging.
+# 2. The image bakes in a fixed model bundle, so a pod needs no registry, no
+#    tracking server, and no network at all to become ready. A rollout is an
+#    image change, which is also what makes rollback a `kubectl rollout undo`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: water-body-inference
+  labels:
+    app: water-body-inference
+spec:
+  # 1, not 2, on a single-node local cluster. Two replicas request 2Gi between
+  # them, and maxUnavailable: 0 means a rollout needs a THIRD pod scheduled
+  # before it retires one -- 3Gi of inference alongside Prometheus and Grafana
+  # does not fit, and the rollout wedges with a pod Pending on Insufficient
+  # memory. Raise this on a cluster with room; the manifest is otherwise
+  # unchanged, and the Service load-balances either way.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: water-body-inference
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Readiness gates the rollout: a new pod only takes traffic once its
+      # model has loaded, so maxUnavailable 0 means no capacity is lost while
+      # a bad image is being discovered.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: water-body-inference
+      # Annotation-based discovery: the scrape config below matches on these
+      # rather than naming pods, so replicas are picked up automatically as they
+      # come and go. (A Prometheus Operator install would use a ServiceMonitor
+      # instead; this works on a plain cluster.)
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: inference
+          image: water-body-inference:latest
+          # Local clusters (kind, minikube, Docker Desktop) have the image
+          # loaded directly rather than pulled; IfNotPresent stops kubelet
+          # trying a registry that does not have it.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: DEVICE
+              value: "cpu"
+            - name: MODEL_PATH
+              value: "/app/deployment/exported_model/best_model"
+            - name: CLASS_BALANCE_PATH
+              value: "/app/metrics/class_balance.json"
+            - name: PREDICTION_LOG
+              value: "/app/logs/predictions.jsonl"
+
+          # Measured, not guessed: DeepLabV3+/MobileNetV2 reserves ~1.4 GB at
+          # batch 8 on GPU, and CPU inference on a tiled full-resolution image
+          # is the larger consumer here. The limit is deliberately not much
+          # above the request -- an inference pod that needs far more than it
+          # asked for is a pod about to be OOMKilled mid-request.
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+
+          # Startup, liveness and readiness answer three different questions,
+          # and collapsing them is the usual mistake.
+          #
+          # startup: has the model finished loading? Up to 60s (12 x 5s) before
+          #          the pod is declared failed. Without this, liveness would
+          #          start killing pods mid-load.
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12
+
+          # liveness: is the process wedged? Restarting fixes that. Uses
+          #           /health, which answers 200 whenever the server responds
+          #           at all -- a loaded-but-idle pod must not be restarted.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # readiness: should this pod receive traffic? Uses /ready, which is
+          #            503 without a model. Restarting would not help, so this
+          #            removes the pod from the Service instead of killing it.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 2
+
+          volumeMounts:
+            # emptyDir, not a PVC: the prediction log is per-pod and dies with
+            # it. That is a real limitation -- with 2 replicas, /drift on one
+            # pod sees only its own traffic, and a restart loses the history.
+            # Prometheus is the fix, because scraped metrics aggregate across
+            # pods and survive them. Until then, treat /drift as a per-pod view.
+            - name: prediction-logs
+              mountPath: /app/logs
+
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # torch writes to /tmp
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: prediction-logs
+          emptyDir: {}
