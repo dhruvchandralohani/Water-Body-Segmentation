@@ -32,9 +32,9 @@ jobs:
     name: lint and types
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -132,7 +132,7 @@ jobs:
           )
           PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: servable-bundle
           path: deployment/exported_model/best_model
@@ -152,7 +152,7 @@ jobs:
     # it at build time.
     needs: tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Restored to the exact path three other files agree on -- the artifact_uri
       # export_model downloads, the Dockerfile COPY, and serve.py's MODEL_PATH
@@ -216,7 +216,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Same stub the docker job uses: the exported model is a DVC output and
       # absent from a fresh clone. The published image is therefore structurally
