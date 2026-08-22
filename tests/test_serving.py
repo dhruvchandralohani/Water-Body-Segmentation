@@ -63,6 +63,7 @@ def client(app_module, tmp_path, monkeypatch):
     def fake_predict_image(model, path, device, **kwargs):
         """Stand in for the real tiled inference, keeping its return contract."""
         image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        assert image is not None, f"cv2.imread returned None for {path}"
         height, width = image.shape[:2]
         mask = np.zeros((height, width), dtype=np.uint8)
         mask[: height // 2, :] = 1  # top half "water"
