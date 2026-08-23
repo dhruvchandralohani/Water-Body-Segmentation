@@ -53,7 +53,6 @@ $targets = @(
     # Checkpoints: train plus every experiment grid
     'training/checkpoints',
     'training/checkpoints_tune',
-    'training/checkpoints_benchmark',
     'training/checkpoints_capacity',
     'training/checkpoints_loss',
     'training/checkpoints_batching',
@@ -72,7 +71,11 @@ $targets = @(
     'logs',
 
     # Test cache
-    '.pytest_cache'
+    '.pytest_cache',
+
+    # Image tarball from `docker save`, used to sideload into a cluster when
+    # `kind load` is unavailable. Half a gigabyte, and regenerable in seconds.
+    'wbi.tar'
 )
 
 function Get-SizeMB {
