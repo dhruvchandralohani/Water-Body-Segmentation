@@ -20,7 +20,7 @@ training/optuna_study.db
 deployment/exported_model/
 data/interim/
 data/processed/
-docs/
+docs/findings.md
 
 # NOTE: metrics/ is intentionally absent. Those files are declared
 # `cache: false` in dvc.yaml, which means git is meant to version them --
