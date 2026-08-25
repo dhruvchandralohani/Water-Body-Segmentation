@@ -287,17 +287,25 @@ def test_exported_model_loads_and_predicts(pipeline):
     calls -- rather than through mlflow directly. Calling mlflow by hand missed
     that the production loader has to turn an absolute path into a file:// URI
     before MLflow will accept it.
+
+    numpy in, numpy out: both backends share that contract so predict_image can
+    run without importing torch. no_grad and device placement live inside
+    TorchBackend, which is why there is none of either here.
     """
     import torch
 
     from deployment.inference import load_model
 
     model = load_model(model_bundle(pipeline), torch.device("cpu"))
-    with torch.no_grad():
-        out = model(torch.randn(1, 3, PATCH_SIZE, PATCH_SIZE))
+    sample = np.random.default_rng(0).standard_normal(
+        (1, 3, PATCH_SIZE, PATCH_SIZE)
+    ).astype(np.float32)
 
+    out = model(sample)
+
+    assert isinstance(out, np.ndarray)
     assert out.shape == (1, 1, PATCH_SIZE, PATCH_SIZE)
-    assert torch.isfinite(out).all()
+    assert np.isfinite(out).all()
 
 
 def test_exported_model_is_deterministic(pipeline):
@@ -311,12 +319,16 @@ def test_exported_model_is_deterministic(pipeline):
     from deployment.inference import load_model
 
     model = load_model(model_bundle(pipeline), torch.device("cpu"))
-    sample = torch.randn(1, 3, PATCH_SIZE, PATCH_SIZE)
+    sample = np.random.default_rng(0).standard_normal(
+        (1, 3, PATCH_SIZE, PATCH_SIZE)
+    ).astype(np.float32)
 
-    with torch.no_grad():
-        first, second = model(sample), model(sample)
+    first, second = model(sample), model(sample)
 
-    assert torch.allclose(first, second)
+    # Exact equality, not allclose: the same weights on the same input through
+    # the same graph should be bit-identical. Any tolerance here would also
+    # accept dropout still being active, which is the thing being ruled out.
+    assert np.array_equal(first, second)
 
 
 @pytest.mark.parametrize("relative", [True, False])

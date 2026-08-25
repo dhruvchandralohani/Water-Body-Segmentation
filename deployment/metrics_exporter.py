@@ -76,7 +76,7 @@ MODEL_INFO = Gauge(
     "water_body_model_info",
     "Always 1. The labels carry which model is serving, so a dashboard can "
     "correlate a shift in the distribution with a rollout.",
-    ["model_name", "model_version", "device"],
+    ["model_name", "model_version", "device", "backend"],
 )
 
 MODEL_LOADED = Gauge(
@@ -85,17 +85,26 @@ MODEL_LOADED = Gauge(
 )
 
 
-def set_model_info(model_name, model_version, device, loaded):
-    """Record which model this pod is serving.
+def set_model_info(model_name, model_version, device, loaded, backend="unknown"):
+    """Record which model this pod is serving, and through which runtime.
+
+    The backend label is what turns "ONNX is faster" into a measurement: the
+    latency histogram is already collected, so a dashboard can split it by
+    backend and show the difference rather than assert it.
 
     Args:
         model_name: Registered model name.
         model_version: Version string, or "unknown".
-        device: Torch device the model runs on.
+        device: Device the model runs on.
         loaded: Whether the model loaded successfully.
+        backend: "onnx" or "pytorch". A fixed, tiny set -- each distinct value
+            is another time series.
     """
     MODEL_INFO.labels(
-        model_name=str(model_name), model_version=str(model_version), device=str(device)
+        model_name=str(model_name),
+        model_version=str(model_version),
+        device=str(device),
+        backend=str(backend),
     ).set(1)
     MODEL_LOADED.set(1 if loaded else 0)
 

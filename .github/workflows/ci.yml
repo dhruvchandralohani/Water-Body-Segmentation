@@ -107,14 +107,22 @@ jobs:
         run: python -m pytest -m slow -q
 
       # The docker job needs something serve.py can actually load, and this is
-      # the only job with torch and mlflow installed. A placeholder file will not
-      # do: serve.py loads the model during FastAPI startup, so an unloadable
-      # bundle means uvicorn never comes up and /health never answers.
-      - name: Build a minimal servable bundle
+      # the only job with torch installed -- which is the point: the serving
+      # image does NOT have torch, so the bundle it receives has to be an ONNX
+      # graph. A placeholder file will not do either, because serve.py loads the
+      # model during FastAPI startup, so an unloadable bundle means uvicorn
+      # never comes up and /health never answers.
+      #
+      # Exported through the project's own export_onnx, verification included,
+      # so this step also exercises the conversion path on every push.
+      - name: Build a minimal servable ONNX bundle
         run: |
           python - <<'PY'
-          import mlflow.pytorch
+          import pathlib
+
           import torch.nn as nn
+
+          from deployment.export_onnx import DEFAULT_OPSET, export, verify, write_metadata
 
           class Tiny(nn.Module):
               """One conv, 3->1 channels: the shape contract serve.py expects."""
@@ -125,11 +133,14 @@ jobs:
               def forward(self, x):
                   return self.conv(x)
 
-          mlflow.pytorch.save_model(
-              Tiny(),
-              "deployment/exported_model/best_model",
-              serialization_format="pickle",
-          )
+          bundle = pathlib.Path("deployment/exported_model/best_model")
+          bundle.mkdir(parents=True, exist_ok=True)
+
+          model = Tiny().eval()
+          graph = export(model, bundle / "model.onnx", 256)
+          summary = verify(model, graph, 256)
+          write_metadata(bundle, 256, DEFAULT_OPSET, summary)
+          print("verification:", summary)
           PY
 
       - uses: actions/upload-artifact@v5
@@ -218,14 +229,21 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Same stub the docker job uses: the exported model is a DVC output and
-      # absent from a fresh clone. The published image is therefore structurally
-      # correct but carries no weights -- a real pipeline would pull the
-      # promoted artifact here, which needs a DVC remote or a tracking server.
+      # The exported model is a DVC output, absent from a fresh clone. The
+      # published image is therefore structurally correct but carries no
+      # weights -- a real pipeline would pull the promoted artifact here, which
+      # needs a DVC remote or a tracking server.
+      #
+      # A bare MLmodel file is no longer enough: the image ships onnxruntime and
+      # not torch, so MODEL_BACKEND=auto finding no model.onnx would fall
+      # through to the PyTorch loader and fail on an import that is not there.
       - name: Stub the exported model
         run: |
           mkdir -p deployment/exported_model/best_model
           printf '{"stub": true}\n' > deployment/exported_model/best_model/MLmodel
+          printf '{"onnx_file": "model.onnx", "input_name": "input", "output_name": "logits", "patch_size": 256, "opset": 17, "dynamic_axes": ["batch"], "verification": {}}\n' \
+            > deployment/exported_model/best_model/onnx_metadata.json
+          : > deployment/exported_model/best_model/model.onnx
 
       - uses: docker/login-action@v3
         with:

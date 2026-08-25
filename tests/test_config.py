@@ -30,20 +30,27 @@ def stage_bodies(pipeline):
         yield name, stage.get("do", stage)
 
 
-def module_file_for(cmd):
-    """Resolve the script a stage command runs.
+def invocations_for(cmd):
+    """Split a stage command into its (module_file, flags) invocations.
+
+    A stage may chain several scripts with &&, as export does: it writes the
+    MLflow bundle and then converts it to ONNX. Resolving only the first module
+    would check the second script's flags against the first one's argparser --
+    which is how this function's predecessor reported a false failure.
 
     Args:
         cmd: The stage's command string.
 
-    Returns:
-        Path to the module's source file, or None if the command is not a
-        `python -m` invocation.
+    Yields:
+        Tuples of (path to the module source, set of flags that segment passes).
     """
-    match = re.search(r"python\s+-m\s+([\w.]+)", cmd)
-    if not match:
-        return None
-    return REPO_ROOT / (match.group(1).replace(".", "/") + ".py")
+    for segment in cmd.split("&&"):
+        match = re.search(r"python\s+-m\s+([\w.]+)", segment)
+        if not match:
+            continue
+        module_file = REPO_ROOT / (match.group(1).replace(".", "/") + ".py")
+        flags = set(re.findall(r"(?<!\S)(--[a-z0-9][a-z0-9-]*)", segment))
+        yield module_file, flags
 
 
 def resolve(text, params):
@@ -69,16 +76,12 @@ def test_every_stage_flag_is_declared_by_its_script(dvc_pipeline):
     """
     problems = []
     for name, body in stage_bodies(dvc_pipeline):
-        cmd = body["cmd"]
-        module_file = module_file_for(cmd)
-        if module_file is None:
-            continue
-        assert module_file.exists(), f"{name}: {module_file} does not exist"
+        for module_file, used in invocations_for(body["cmd"]):
+            assert module_file.exists(), f"{name}: {module_file} does not exist"
 
-        allowed = declared_flags(module_file)
-        used = set(re.findall(r"(?<!\S)(--[a-z0-9][a-z0-9-]*)", cmd))
-        for flag in sorted(used - allowed):
-            problems.append(f"{name}: passes {flag}, not declared in {module_file.name}")
+            allowed = declared_flags(module_file)
+            for flag in sorted(used - allowed):
+                problems.append(f"{name}: passes {flag}, not declared in {module_file.name}")
 
     assert not problems, "\n".join(problems)
 

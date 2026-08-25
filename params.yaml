@@ -263,6 +263,20 @@ batching:
       seed: 42
 
 # ---------------------------------------------------------------------------
+# Stage: export
+#
+# The exported bundle is converted to ONNX so the serving image can drop torch
+# (~800 MB) for onnxruntime (~50 MB). The conversion verifies itself against the
+# source model and deletes the graph if they disagree -- a bad ONNX export does
+# not raise, it just returns subtly different numbers.
+# ---------------------------------------------------------------------------
+export:
+  # 17 is the floor for this architecture: DeepLabV3+'s ASPP image-pooling
+  # branch pairs AdaptiveAvgPool2d with F.interpolate, and resize only handles a
+  # dynamic batch cleanly from opset 11.
+  opset: 17
+
+# ---------------------------------------------------------------------------
 # Stage: evaluate
 # ---------------------------------------------------------------------------
 evaluate:

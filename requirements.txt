@@ -34,3 +34,7 @@ dvc==3.63.0
 # deployment/requirements.txt; listed here so CI can import serve.py.
 prometheus-client==0.24.1
 httpx==0.28.1
+
+#onnx
+onnx
+onnxruntime

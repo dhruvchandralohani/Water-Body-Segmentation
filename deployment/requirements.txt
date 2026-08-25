@@ -1,7 +1,15 @@
-segmentation-models-pytorch==0.5.0
+# Serving dependencies only. Deliberately WITHOUT torch: the ONNX backend runs
+# the model through onnxruntime, and predict_image was rewritten in numpy so
+# nothing in the request path needs a tensor library. onnxruntime is ~50 MB
+# against torch's ~800 MB.
+#
+# To serve from a PyTorch bundle instead, add torch and
+# segmentation-models-pytorch back and set MODEL_BACKEND=pytorch. The code path
+# is unchanged either way -- only what is installed differs.
+onnxruntime==1.24.4
 opencv-python-headless==4.13.0.92
 albumentations==2.0.8
-pandas==2.3.3
+numpy==2.3.5
 mlflow-skinny==3.15.1
 fastapi==0.141.1
 uvicorn[standard]==0.52.1

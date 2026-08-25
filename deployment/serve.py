@@ -13,7 +13,8 @@ Usage:
 
 Environment variables (all optional, sensible defaults for local use):
     MODEL_PATH   -- path to an export_model.py bundle (default: exported_model/best_model)
-    DEVICE       -- cuda / cpu (default: cuda if available, else cpu)
+    DEVICE        -- cuda / cpu (default: cuda if available, else cpu)
+    MODEL_BACKEND -- auto / onnx / pytorch (default: auto)
     TILE_SIZE, OVERLAP, PATCH_SIZE, THRESHOLD, BATCH_SIZE -- inference config, see inference.py
 """
 
@@ -35,7 +36,6 @@ from pathlib import Path as _Path
 
 import cv2
 import numpy as np
-import torch
 import yaml
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -46,12 +46,18 @@ _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 from common.logging_setup import setup_logger
 from deployment import metrics_exporter, prediction_log
-from deployment.inference import load_model, predict_image
+from deployment.inference import default_device, load_model, predict_image
 
 logger = setup_logger("serve", log_file="serve.log")
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "exported_model/best_model")
-DEVICE = os.environ.get("DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+# A string, not a torch.device: torch is no longer imported here, so that the
+# ONNX backend can serve from an image that does not ship it.
+DEVICE = os.environ.get("DEVICE") or default_device()
+# "auto" prefers an ONNX graph when the bundle carries one. Set explicitly to
+# compare backends -- asking for one and silently getting the other would show
+# up only as a latency difference.
+MODEL_BACKEND = os.environ.get("MODEL_BACKEND", "auto")
 TILE_SIZE = int(os.environ.get("TILE_SIZE", 384))
 OVERLAP = float(os.environ.get("OVERLAP", 0.25))
 PATCH_SIZE = int(os.environ.get("PATCH_SIZE", 256))
@@ -67,16 +73,22 @@ CLASS_BALANCE_PATH = os.environ.get(
     "CLASS_BALANCE_PATH", str(_Path(__file__).resolve().parent.parent / "metrics" / "class_balance.json")
 )
 
-model_state: dict[str, Any] = {"model": None, "device": None, "model_name": "water-body-segmentation", "model_version": "unknown"}
+model_state: dict[str, Any] = {
+    "model": None,
+    "device": None,
+    "model_name": "water-body-segmentation",
+    "model_version": "unknown",
+    "backend": "unknown",
+}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load the segmentation model when the FastAPI app starts up."""
-    device = torch.device(DEVICE)
+    device = DEVICE
     logger.info(f"Loading model from {MODEL_PATH} onto {device}")
     t0 = time.time()
-    model_state["model"] = load_model(MODEL_PATH, device)
+    model_state["model"] = load_model(MODEL_PATH, device, backend=MODEL_BACKEND, use_fp16=USE_FP16)
     model_state["device"] = device
     try:
         mlmodel_path = _Path(MODEL_PATH) / "MLmodel"
@@ -89,11 +101,16 @@ async def lifespan(app: FastAPI):
     # Published once at startup. model_info is a labels-carry-the-data gauge:
     # a dashboard joins on it so a shift in the served distribution can be lined
     # up against which model version was live at the time.
+    # The backend that was actually resolved, not the one requested: "auto"
+    # picks at load time, and a dashboard splitting latency by backend needs to
+    # know which one ran.
+    model_state["backend"] = type(model_state["model"]).__name__.replace("Backend", "").lower()
     metrics_exporter.set_model_info(
         model_state["model_name"],
         model_state["model_version"],
         device,
         loaded=model_state["model"] is not None,
+        backend=model_state["backend"],
     )
     metrics_exporter.set_training_reference(
         prediction_log.reference_water_fraction(CLASS_BALANCE_PATH)

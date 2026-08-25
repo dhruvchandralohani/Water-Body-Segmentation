@@ -203,7 +203,9 @@ stages:
   export:
     cmd: python -m deployment.export_model --from-alias --tracking-uri 
       sqlite:///training/mlflow.db --experiment-name water_body_segmentation 
-      --output-dir deployment/exported_model
+      --output-dir deployment/exported_model && python -m deployment.export_onnx
+      --model-dir deployment/exported_model/best_model --patch-size 256 --opset 
+      17 --threshold 0.5
     deps:
     - path: common/mlflow_utils.py
       hash: md5
@@ -213,17 +215,21 @@ stages:
       hash: md5
       md5: a473d58cba0c27844b699171af0d6912
       size: 5615
+    - path: deployment/export_onnx.py
+      hash: md5
+      md5: d1b87692f28a9bcf9bbedf86f2b5be43
+      size: 11450
     - path: deployment/promote_model.py
       hash: md5
       md5: 0b494854b29a4b86135b929d85efe4a3
       size: 9513
     - path: training/optuna_study.db
       hash: md5
-      md5: 0a869a69243ac41c2468775d208a6d07
+      md5: 8616529958c6cf14f74bd5e39bf822c3
       size: 131072
     outs:
     - path: deployment/exported_model
       hash: md5
-      md5: d3cbe5f0cac3ad77a2eafbc5e3842a56.dir
-      size: 17825926
-      nfiles: 7
+      md5: ca24822506bb4e5a65b7f6f731faf08e.dir
+      size: 35315086
+      nfiles: 9

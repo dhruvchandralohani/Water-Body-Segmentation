@@ -15,8 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
-
+# No torch. The model is served through onnxruntime, and predict_image was
+# rewritten in numpy so nothing in the request path needs a tensor library.
+# This line previously installed CPU torch (~800 MB installed) and was the
+# single largest thing in the image.
+#
+# To serve a PyTorch bundle instead, restore this line, add torch and
+# segmentation-models-pytorch to deployment/requirements.txt, and set
+# MODEL_BACKEND=pytorch. The application code is identical either way.
 COPY deployment/requirements.txt ./deployment/requirements.txt
 
 RUN pip install --no-cache-dir -r deployment/requirements.txt
@@ -27,7 +33,10 @@ COPY common/logging_setup.py ./common/logging_setup.py
 
 COPY data_pipeline/__init__.py ./data_pipeline/__init__.py
 
-COPY data_pipeline/stitch.py data_pipeline/tile_dataset.py data_pipeline/transforms.py ./data_pipeline/
+# tiling.py, NOT tile_dataset.py: the latter imports torch.utils.data at module
+# scope, and this image no longer ships torch. Copying it in would leave a
+# module that fails on import the moment anything reaches for it.
+COPY data_pipeline/stitch.py data_pipeline/tiling.py data_pipeline/transforms.py ./data_pipeline/
 
 COPY deployment/__init__.py ./deployment/__init__.py
 

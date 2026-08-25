@@ -407,9 +407,15 @@ stages:
       --from-alias
       --tracking-uri sqlite:///${paths.mlflow_db}
       --experiment-name ${train.experiment_name}
-      --output-dir ${paths.exported_model_dir}
+      --output-dir ${paths.exported_model_dir} &&
+      python -m deployment.export_onnx
+      --model-dir ${paths.exported_model_dir}/best_model
+      --patch-size ${data.patch_size}
+      --opset ${export.opset}
+      --threshold ${evaluate.threshold}
     deps:
       - deployment/export_model.py
+      - deployment/export_onnx.py
       - deployment/promote_model.py
       - common/mlflow_utils.py
       - ${paths.study_db}

@@ -172,6 +172,27 @@ Builds a self-contained image: model bundle, `class_balance.json` reference,
 and serving code. No tracking server or registry is needed at runtime, so a
 registry outage cannot stop the service starting.
 
+**The image ships onnxruntime, not torch.** `predict_image` is numpy-native and
+both backends adapt to numpy, so nothing in the request path needs a tensor
+library. To serve a PyTorch bundle instead, restore the torch install line in
+the Dockerfile, add torch and `segmentation-models-pytorch` to
+`deployment/requirements.txt`, and set `MODEL_BACKEND=pytorch` -- the
+application code is identical either way.
+
+`MODEL_BACKEND` defaults to `auto`, which prefers an ONNX graph when the bundle
+carries one. Set it explicitly when comparing backends: asking for one and
+silently getting the other would show up only as a latency difference.
+
+Confirm which runtime is actually serving:
+
+```powershell
+curl.exe http://localhost:8000/metrics | Select-String model_info
+```
+
+The `backend` label is the answer, and the latency histogram carries the same
+label -- so a Grafana panel splits by runtime and shows the difference rather
+than asserting it.
+
 ```powershell
 curl.exe http://localhost:8000/health
 ```

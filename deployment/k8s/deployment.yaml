@@ -67,18 +67,23 @@ spec:
             - name: PREDICTION_LOG
               value: "/app/logs/predictions.jsonl"
 
-          # Measured, not guessed: DeepLabV3+/MobileNetV2 reserves ~1.4 GB at
-          # batch 8 on GPU, and CPU inference on a tiled full-resolution image
-          # is the larger consumer here. The limit is deliberately not much
-          # above the request -- an inference pod that needs far more than it
-          # asked for is a pod about to be OOMKilled mid-request.
+          # PROVISIONAL, and the one thing here still to be measured. These
+          # were sized for the PyTorch image; the ONNX one ships onnxruntime
+          # instead of torch and should need materially less resident memory,
+          # but "should" is not a measurement. Run `kubectl top pod` under load
+          # and set the request to observed steady state.
+          #
+          # Sized wrong once already, from a GPU figure that had nothing to do
+          # with CPU inference on a tiled full-resolution image -- so the limit
+          # is kept comfortably above the request until real numbers replace
+          # these.
           resources:
             requests:
               cpu: "500m"
-              memory: "1Gi"
+              memory: "512Mi"
             limits:
               cpu: "2"
-              memory: "3Gi"
+              memory: "2Gi"
 
           # Startup, liveness and readiness answer three different questions,
           # and collapsing them is the usual mistake.
