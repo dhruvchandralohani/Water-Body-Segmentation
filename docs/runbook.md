@@ -164,9 +164,14 @@ the decision to deploy does.
 ## 5. Container
 
 ```powershell
-docker build -f deployment/Dockerfile -t water-body-inference:latest .
-docker run -p 8000:8000 water-body-inference:latest
+docker build -f deployment/Dockerfile -t water-body-inference:onnx .
+docker run -p 8000:8000 water-body-inference:onnx
 ```
+
+The `onnx` tag distinguishes this from the older torch-based image locally.
+Note that it is mutable in the same way `latest` is -- a deployment referencing
+it has no record of which build it ran. The CI publish job tags by commit SHA
+for that reason, and a real deployment should pin to a digest rather than either.
 
 Builds a self-contained image: model bundle, `class_balance.json` reference,
 and serving code. No tracking server or registry is needed at runtime, so a
@@ -203,7 +208,7 @@ curl.exe http://localhost:8000/health
 
 ```powershell
 kind create cluster --name water-body
-kind load docker-image water-body-inference:latest --name water-body
+kind load docker-image water-body-inference:onnx --name water-body
 kubectl create configmap grafana-dashboards --from-file=deployment/k8s/dashboards/
 kubectl apply -f deployment/k8s/
 kubectl rollout status deployment/water-body-inference
@@ -221,7 +226,7 @@ manifest.
 If `kind` is unavailable, sideload manually:
 
 ```powershell
-docker save water-body-inference:latest -o wbi.tar
+docker save water-body-inference:onnx -o wbi.tar
 docker cp wbi.tar water-body-control-plane:/wbi.tar
 docker exec water-body-control-plane ctr --namespace k8s.io images import /wbi.tar
 ```

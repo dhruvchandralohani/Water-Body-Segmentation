@@ -49,7 +49,11 @@ spec:
     spec:
       containers:
         - name: inference
-          image: water-body-inference:latest
+          # Mutable, like latest -- a pod referencing it has no record of which
+          # build it ran. Fine for a local cluster where the image is sideloaded;
+          # a real deployment pins the digest, which is why the CI publish job
+          # tags by commit SHA.
+          image: water-body-inference:onnx
           # Local clusters (kind, minikube, Docker Desktop) have the image
           # loaded directly rather than pulled; IfNotPresent stops kubelet
           # trying a registry that does not have it.
@@ -67,23 +71,36 @@ spec:
             - name: PREDICTION_LOG
               value: "/app/logs/predictions.jsonl"
 
-          # PROVISIONAL, and the one thing here still to be measured. These
-          # were sized for the PyTorch image; the ONNX one ships onnxruntime
-          # instead of torch and should need materially less resident memory,
-          # but "should" is not a measurement. Run `kubectl top pod` under load
-          # and set the request to observed steady state.
+          # Measured with `kubectl top pod` against the ONNX image while serving
+          # a batch of full-resolution images, single replica, one uvicorn
+          # worker:
           #
-          # Sized wrong once already, from a GPU figure that had nothing to do
-          # with CPU inference on a tiled full-resolution image -- so the limit
-          # is kept comfortably above the request until real numbers replace
-          # these.
+          #   memory   525 Mi idle -> 552 Mi peak
+          #   cpu      224m       -> 859m peak
+          #
+          # The memory reading is the informative one: only ~27 Mi separates
+          # idle from loaded, so the footprint is the resident runtime and model
+          # rather than per-request tile buffers. That is what makes a 1Gi limit
+          # safe here -- it would not have been with torch resident.
+          #
+          # Request set just above observed peak, since anything lower schedules
+          # onto a node that cannot actually hold it. An earlier 512Mi request
+          # was below steady state for exactly that reason.
+          #
+          # CPU request reflects the observed peak because inference latency is
+          # the thing being protected; CPU is compressible, so exceeding it
+          # throttles rather than kills, and the limit leaves room to burst.
+          #
+          # Re-measure if replicas, uvicorn workers, or patch_size change --
+          # concurrency multiplies the per-request part, which is small only
+          # because there is currently one request at a time.
           resources:
             requests:
-              cpu: "500m"
-              memory: "512Mi"
+              cpu: "750m"
+              memory: "640Mi"
             limits:
               cpu: "2"
-              memory: "2Gi"
+              memory: "1Gi"
 
           # Startup, liveness and readiness answer three different questions,
           # and collapsing them is the usual mistake.
